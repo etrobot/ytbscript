@@ -1,0 +1,13 @@
+[project]
+name = "ytbscript"
+version = "0.1.0"
+description = "YouTube video downloader service with FastAPI and yt-dlp"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "yt-dlp>=2023.11.16",
+    "pydantic>=2.5.0",
+    "python-multipart>=0.0.6",
+]
