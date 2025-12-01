@@ -1,329 +1,239 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, HttpUrl
 from typing import Optional
 import yt_dlp
-import os
-import tempfile
 import shutil
 from pathlib import Path
-import json
+import re
+import tempfile
 
 app = FastAPI(
-    title="YouTube Downloader Service",
-    description="基于 FastAPI 和 yt-dlp 的视频下载服务，支持 cookie 和字幕下载",
-    version="1.0.0"
+    title="YouTube Subtitle Service",
+    description="YouTube 字幕下载服务",
+    version="2.0.0"
 )
 
-# 创建临时下载目录
-DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "ytbscript_downloads"
-DOWNLOAD_DIR.mkdir(exist_ok=True)
-
-# 创建 cookie 存储目录
-COOKIE_DIR = Path(tempfile.gettempdir()) / "ytbscript_cookies"
+# 使用项目本地目录
+BASE_DIR = Path(__file__).parent.absolute()
+COOKIE_DIR = BASE_DIR / "cookies"
 COOKIE_DIR.mkdir(exist_ok=True)
 
 
-class DownloadRequest(BaseModel):
-    """下载请求模型"""
-    url: HttpUrl
-    cookie_string: Optional[str] = None  # Cookie字符串内容
-    download_subtitles: bool = True
-    subtitle_lang: str = "en"  # 默认英文字幕
-    format_quality: str = "best"  # best, worst, 或具体格式如 "bestvideo+bestaudio"
-
-
-class CookieRequest(BaseModel):
-    """Cookie设置请求模型"""
+class SaveCookieRequest(BaseModel):
+    """保存 Cookie 请求模型"""
     cookie_name: str
-    cookie_content: str  # Cookie内容字符串
+    cookie_content: str
 
 
-class VideoInfo(BaseModel):
-    """视频信息模型"""
-    title: str
-    duration: Optional[int]
-    uploader: Optional[str]
-    description: Optional[str]
-    thumbnail: Optional[str]
-    formats: list
+class DownloadRequest(BaseModel):
+    """字幕下载请求模型"""
+    url: HttpUrl
+    cookie_file: str  # Cookie 文件名（从 ./cookies/ 目录读取）
+    subtitle_lang: str = "en"
 
 
-@app.get("/")
-async def root():
-    """根路径，返回 API 信息"""
-    return {
-        "message": "YouTube Downloader Service",
-        "version": "1.0.0",
-        "endpoints": {
-            "info": "/info?url=<video_url>&cookie_string=<optional_cookie>",
-            "download": "/download (POST)",
-            "set_cookie": "/cookie/set (POST)",
-            "list_cookies": "/cookie/list (GET)",
-            "delete_cookie": "/cookie/{cookie_name} (DELETE)"
-        }
-    }
-
-
-@app.get("/info")
-async def get_video_info(url: str, cookie_string: Optional[str] = None):
+def vtt_to_json(vtt_path):
     """
-    获取视频信息
-    
-    参数:
-    - url: 视频 URL
-    - cookie_string: Cookie 字符串内容（可选）
+    将 VTT 字幕文件转换为 JSON 格式，处理重叠的时间戳并去重
     """
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-    }
-    
-    # 如果提供了 cookie 字符串，创建临时文件
-    cookie_file_path = None
-    if cookie_string:
-        cookie_file_path = COOKIE_DIR / f"temp_{os.urandom(8).hex()}.txt"
-        with open(cookie_file_path, 'w', encoding='utf-8') as f:
-            f.write(cookie_string)
-        ydl_opts['cookiefile'] = str(cookie_file_path)
-    
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            return VideoInfo(
-                title=info.get('title', 'Unknown'),
-                duration=info.get('duration'),
-                uploader=info.get('uploader'),
-                description=info.get('description'),
-                thumbnail=info.get('thumbnail'),
-                formats=[{
-                    'format_id': f.get('format_id'),
-                    'ext': f.get('ext'),
-                    'resolution': f.get('resolution'),
-                    'filesize': f.get('filesize')
-                } for f in info.get('formats', [])]
-            )
+        with open(vtt_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 移除 WEBVTT 头部信息
+        content = re.sub(r'^WEBVTT.*?\n\n', '', content, flags=re.DOTALL)
+
+        # 分割成字幕块
+        blocks = re.split(r'\n\n+', content.strip())
+
+        # 第一步：解析并去除完全重复的字幕
+        unique_subtitles = []
+        time_re = re.compile(r'(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})')
+        seen_subtitles = set()
+
+        if len(blocks) > 0:
+            for block in blocks:
+                lines = block.strip().split('\n')
+                if len(lines) < 2:
+                    continue
+
+                # 查找时间行
+                time_match = None
+                for line in lines:
+                    match = time_re.search(line)
+                    if match:
+                        time_match = match
+                        break
+
+                if not time_match:
+                    continue
+
+                start_time, end_time = time_match.groups()
+
+                # 获取字幕文本（跳过时间行和 align/position 信息）
+                subtitle_lines = []
+                for line in lines:
+                    if time_re.search(line) or 'align:' in line or 'position:' in line:
+                        continue
+                    clean_line = re.sub(r'<[^>]+>', '', line)
+                    clean_line = re.sub(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', '', clean_line)
+                    if clean_line.strip():
+                        subtitle_lines.append(clean_line.strip())
+
+                subtitle_text = ' '.join(subtitle_lines).strip()
+
+                if not subtitle_text:
+                    continue
+
+                # 使用时间戳+文本作为唯一标识
+                subtitle_key = f"{start_time}_{end_time}_{subtitle_text}"
+
+                if subtitle_key in seen_subtitles:
+                    continue
+
+                seen_subtitles.add(subtitle_key)
+
+                unique_subtitles.append({
+                    "time": f"{start_time} --> {end_time}",
+                    "start": start_time,
+                    "end": end_time,
+                    "subtitle": subtitle_text
+                })
+
+        # 第二步：处理相邻字幕的重复部分
+        processed_subtitles = []
+        for i, item in enumerate(unique_subtitles):
+            current_text = item['subtitle']
+
+            if i == 0:
+                processed_subtitles.append(item)
+                continue
+
+            prev_text = processed_subtitles[-1]['subtitle']
+
+            if current_text in prev_text:
+                continue
+
+            if current_text.startswith(prev_text):
+                current_text = current_text[len(prev_text):].strip()
+
+            if current_text.strip():
+                new_item = item.copy()
+                new_item['subtitle'] = current_text
+                processed_subtitles.append(new_item)
+
+        return processed_subtitles
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取视频信息失败: {str(e)}")
-    finally:
-        # 清理临时cookie文件
-        if cookie_file_path and cookie_file_path.exists():
-            cookie_file_path.unlink()
+        raise HTTPException(status_code=500, detail=f"转换 VTT 到 JSON 时出错: {str(e)}")
 
 
-def update_cookie_from_ytdlp(ydl, original_cookie_string=None):
-    """从yt-dlp实例更新cookie内容"""
-    try:
-        if hasattr(ydl, '_get_cookies') and original_cookie_string:
-            # 尝试获取更新后的cookies
-            cookies = ydl._get_cookies('')
-            if cookies:
-                # 转换为Netscape格式
-                cookie_lines = ["# Netscape HTTP Cookie File"]
-                for cookie in cookies:
-                    line = f"{cookie.domain}\t{str(cookie.domain_specified).upper()}\t{cookie.path}\t{str(cookie.secure).upper()}\t{cookie.expires or 0}\t{cookie.name}\t{cookie.value}"
-                    cookie_lines.append(line)
-                return '\n'.join(cookie_lines)
-    except Exception:
-        pass
-    return original_cookie_string
-
-
-@app.post("/download")
-async def download_video(request: DownloadRequest):
+@app.post("/cookie/save")
+async def save_cookie(request: SaveCookieRequest):
     """
-    下载视频和字幕
+    保存 Cookie 到本地
     
     请求体:
     {
-        "url": "视频 URL",
-        "cookie_string": "Cookie内容字符串（可选）",
-        "download_subtitles": true,
-        "subtitle_lang": "en",
-        "format_quality": "best"
+        "cookie_name": "youtube_cookies",
+        "cookie_content": "Cookie 内容字符串"
     }
     """
-    # 创建唯一的下载目录
-    download_path = DOWNLOAD_DIR / f"download_{os.urandom(8).hex()}"
-    download_path.mkdir(exist_ok=True)
-    
-    # 配置 yt-dlp 选项
-    ydl_opts = {
-        'format': request.format_quality,
-        'outtmpl': str(download_path / '%(title)s.%(ext)s'),
-        'quiet': False,
-        'no_warnings': False,
-    }
-    
-    # 如果需要下载字幕
-    if request.download_subtitles:
-        ydl_opts.update({
-            'writesubtitles': True,
-            'writeautomaticsub': True,  # 也尝试自动生成的字幕
-            'subtitleslangs': [request.subtitle_lang],
-            'subtitlesformat': 'vtt',  # 指定 VTT 格式
-            'skip_download': False,  # 同时下载视频
-        })
-    
-    # 如果提供了 cookie 字符串，创建临时文件
-    cookie_file_path = None
-    if request.cookie_string:
-        cookie_file_path = COOKIE_DIR / f"temp_{os.urandom(8).hex()}.txt"
-        with open(cookie_file_path, 'w', encoding='utf-8') as f:
-            f.write(request.cookie_string)
-        ydl_opts['cookiefile'] = str(cookie_file_path)
-    
-    updated_cookie_string = None
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(str(request.url), download=True)
-            
-            # 如果成功下载且有字幕，尝试更新cookie
-            if request.download_subtitles and request.cookie_string:
-                updated_cookie_string = update_cookie_from_ytdlp(ydl, request.cookie_string)
-            
-            # 获取下载的文件
-            downloaded_files = list(download_path.glob('*'))
-            
-            video_file = None
-            subtitle_files = []
-            
-            for file in downloaded_files:
-                if file.suffix in ['.mp4', '.webm', '.mkv', '.flv']:
-                    video_file = file
-                elif file.suffix == '.vtt':
-                    subtitle_files.append(file)
-            
-            response = {
-                "status": "success",
-                "title": info.get('title', 'Unknown'),
-                "video_file": str(video_file) if video_file else None,
-                "subtitle_files": [str(f) for f in subtitle_files],
-                "download_path": str(download_path),
-                "message": f"下载完成！视频: {video_file.name if video_file else 'N/A'}, 字幕: {len(subtitle_files)} 个"
-            }
-            
-            # 如果有更新的cookie且下载了字幕，返回更新的cookie
-            if updated_cookie_string and len(subtitle_files) > 0:
-                response["updated_cookie"] = updated_cookie_string
-                response["message"] += "，Cookie已更新"
-            
-            return response
-    
-    except Exception as e:
-        # 清理下载目录
-        if download_path.exists():
-            shutil.rmtree(download_path)
-        raise HTTPException(status_code=500, detail=f"下载失败: {str(e)}")
-    finally:
-        # 清理临时cookie文件
-        if cookie_file_path and cookie_file_path.exists():
-            cookie_file_path.unlink()
-
-
-@app.post("/cookie/set")
-async def set_cookie(request: CookieRequest):
-    """
-    设置 cookie 内容
-    
-    请求体:
-    {
-        "cookie_name": "cookies.txt",
-        "cookie_content": "Cookie内容字符串"
-    }
-    """
-    # 确定 cookie 文件名
     filename = request.cookie_name if request.cookie_name.endswith('.txt') else f"{request.cookie_name}.txt"
     cookie_path = COOKIE_DIR / filename
     
     try:
-        # 保存 cookie 内容到文件
         with open(cookie_path, 'w', encoding='utf-8') as f:
             f.write(request.cookie_content)
         
         return {
             "status": "success",
-            "message": f"Cookie 文件 '{filename}' 设置成功",
+            "message": f"Cookie 文件 '{filename}' 保存成功",
             "cookie_name": filename,
             "path": str(cookie_path)
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"设置 cookie 失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"保存 Cookie 失败: {str(e)}")
 
 
-@app.get("/cookie/list")
-async def list_cookies():
-    """列出所有已上传的 cookie 文件"""
-    cookies = list(COOKIE_DIR.glob('*.txt'))
+@app.post("/subtitle/download")
+async def download_subtitles(request: DownloadRequest):
+    """
+    下载字幕并返回 JSON，同时更新 Cookie
     
-    return {
-        "cookies": [
-            {
-                "name": cookie.name,
-                "path": str(cookie),
-                "size": cookie.stat().st_size
-            }
-            for cookie in cookies
-        ],
-        "count": len(cookies)
+    请求体:
+    {
+        "url": "视频 URL",
+        "cookie_file": "youtube_cookies.txt",
+        "subtitle_lang": "en"
     }
-
-
-@app.delete("/cookie/{cookie_name}")
-async def delete_cookie(cookie_name: str):
-    """删除指定的 cookie 文件"""
-    cookie_path = COOKIE_DIR / cookie_name
-    
+    """
+    # 检查 Cookie 文件是否存在
+    cookie_path = COOKIE_DIR / request.cookie_file
     if not cookie_path.exists():
-        raise HTTPException(status_code=404, detail=f"Cookie 文件 '{cookie_name}' 不存在")
+        raise HTTPException(status_code=404, detail=f"Cookie 文件 '{request.cookie_file}' 不存在")
+    
+    # 创建临时目录用于下载字幕
+    temp_dir = Path(tempfile.mkdtemp(prefix="ytbscript_temp_"))
+    
+    # 配置 yt-dlp 选项
+    ydl_opts = {
+        'skip_download': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': [request.subtitle_lang],
+        'subtitlesformat': 'vtt',
+        'cookiefile': str(cookie_path),
+        'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
+        'quiet': False,
+        'no_warnings': False,
+    }
     
     try:
-        cookie_path.unlink()
-        return {
-            "status": "success",
-            "message": f"Cookie 文件 '{cookie_name}' 已删除"
-        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(str(request.url), download=True)
+            
+            # 更新 Cookie 文件
+            # yt-dlp 会自动更新 cookiefile 指定的文件
+            
+            # 获取下载的字幕文件
+            subtitle_files = list(temp_dir.glob('*.vtt'))
+            
+            if not subtitle_files:
+                raise HTTPException(status_code=404, detail="未找到字幕文件，该视频可能没有字幕")
+            
+            # 转换字幕为 JSON
+            subtitles_data = []
+            for subtitle_file in subtitle_files:
+                try:
+                    subtitle_json = vtt_to_json(str(subtitle_file))
+                    subtitles_data.append({
+                        "language": subtitle_file.stem.split('.')[-1],
+                        "subtitle_count": len(subtitle_json),
+                        "subtitles": subtitle_json
+                    })
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"字幕转换失败: {str(e)}")
+            
+            return {
+                "status": "success",
+                "title": info.get('title', 'Unknown'),
+                "duration": info.get('duration'),
+                "uploader": info.get('uploader'),
+                "subtitle_count": len(subtitles_data[0]['subtitles']) if subtitles_data else 0,
+                "subtitles": subtitles_data,
+                "message": "字幕下载成功，Cookie 已更新"
+            }
+    
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"删除 cookie 失败: {str(e)}")
-
-
-@app.get("/download/file/{download_id}/{filename}")
-async def get_downloaded_file(download_id: str, filename: str):
-    """
-    获取下载的文件
-    
-    参数:
-    - download_id: 下载 ID（从 /download 响应中获取）
-    - filename: 文件名
-    """
-    file_path = DOWNLOAD_DIR / f"download_{download_id}" / filename
-    
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    
-    return FileResponse(
-        path=file_path,
-        filename=filename,
-        media_type='application/octet-stream'
-    )
-
-
-@app.delete("/cleanup")
-async def cleanup_downloads():
-    """清理所有下载的文件"""
-    try:
-        if DOWNLOAD_DIR.exists():
-            shutil.rmtree(DOWNLOAD_DIR)
-            DOWNLOAD_DIR.mkdir(exist_ok=True)
-        
-        return {
-            "status": "success",
-            "message": "所有下载文件已清理"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"清理失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"下载失败: {str(e)}")
+    finally:
+        # 清理临时目录
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
 
 
 if __name__ == "__main__":
