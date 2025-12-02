@@ -1,37 +1,40 @@
-version: '3.8'
-
 services:
   ytbscript:
     build: .
-    container_name: ${CONTAINER_NAME:-ytbscript}
+    container_name: ytbscript
     restart: unless-stopped
-    # 本地开发时直接暴露端口（生产环境通过Traefik访问）
-    ports:
-      - "${EXPOSE_PORT:-}${EXPOSE_PORT:+:24314}"
     volumes:
-      # 生产环境使用命名卷
-      - ${DOWNLOADS_VOLUME:-ytbscript_downloads}:/tmp/ytbscript_downloads
-      - ${COOKIES_VOLUME:-ytbscript_cookies}:/tmp/ytbscript_cookies
+      - ytbscript_downloads:/tmp/ytbscript_downloads
+      - ytbscript_cookies:/tmp/ytbscript_cookies
     environment:
       - PYTHONUNBUFFERED=1
     env_file:
       - .env
     networks:
-      - ${NETWORK_NAME:-traefik}
+      - traefik
     labels:
-      # Traefik配置（生产环境）
-      - "traefik.enable=${TRAEFIK_ENABLE:-true}"
+      # Traefik配置
+      - "traefik.enable=true"
       - "traefik.http.routers.ytbscript.rule=Host(`ytt.subx.fun`)"
       - "traefik.http.routers.ytbscript.entrypoints=websecure"
       - "traefik.http.routers.ytbscript.tls.certresolver=letsencrypt"
       - "traefik.http.services.ytbscript.loadbalancer.server.port=24314"
       
-      # HTTP重定向到HTTPS
-      - "traefik.http.routers.ytbscript-http.rule=Host(`ytt.subx.fun`)"
-      - "traefik.http.routers.ytbscript-http.entrypoints=web"
-      - "traefik.http.routers.ytbscript-http.middlewares=redirect-to-https"
-      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+  # 本地开发环境（使用 --profile local 启动）
+  ytbscript-local:
+    profiles: ["local"]
+    build: .
+    container_name: ytbscript-local
+    restart: unless-stopped
+    ports:
+      - "24314:24314"
+    volumes:
+      - ./downloads:/tmp/ytbscript_downloads
+      - ./cookies:/tmp/ytbscript_cookies
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
 
 volumes:
   ytbscript_downloads:
