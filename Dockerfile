@@ -29,7 +29,7 @@ RUN uv sync --frozen
 RUN mkdir -p /app/downloads /app/cookies
 
 # 暴露端口
-EXPOSE 8000
+EXPOSE 24314
 
 # 启动应用
 CMD ["uv", "run", "python", "main.py"]

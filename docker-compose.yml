@@ -3,27 +3,28 @@ version: '3.8'
 services:
   ytbscript:
     build: .
-    container_name: ytbscript
+    container_name: ${CONTAINER_NAME:-ytbscript}
     restart: unless-stopped
+    # 本地开发时直接暴露端口（生产环境通过Traefik访问）
+    ports:
+      - "${EXPOSE_PORT:-}${EXPOSE_PORT:+:24314}"
     volumes:
-      - ytbscript_downloads:/tmp/ytbscript_downloads
-      - ytbscript_cookies:/tmp/ytbscript_cookies
+      # 生产环境使用命名卷
+      - ${DOWNLOADS_VOLUME:-ytbscript_downloads}:/tmp/ytbscript_downloads
+      - ${COOKIES_VOLUME:-ytbscript_cookies}:/tmp/ytbscript_cookies
     environment:
       - PYTHONUNBUFFERED=1
-      - API_TOKEN=${API_TOKEN:-Abcd123456}
-      - API_TOKEN_HEADER=${API_TOKEN_HEADER:-X-API-Token}
-      - TOKEN_PREFIX=${TOKEN_PREFIX:-}
     env_file:
       - .env
     networks:
-      - traefik
+      - ${NETWORK_NAME:-traefik}
     labels:
-      # Traefik配置
-      - "traefik.enable=true"
+      # Traefik配置（生产环境）
+      - "traefik.enable=${TRAEFIK_ENABLE:-true}"
       - "traefik.http.routers.ytbscript.rule=Host(`ytt.subx.fun`)"
       - "traefik.http.routers.ytbscript.entrypoints=websecure"
       - "traefik.http.routers.ytbscript.tls.certresolver=letsencrypt"
-      - "traefik.http.services.ytbscript.loadbalancer.server.port=8000"
+      - "traefik.http.services.ytbscript.loadbalancer.server.port=24314"
       
       # HTTP重定向到HTTPS
       - "traefik.http.routers.ytbscript-http.rule=Host(`ytt.subx.fun`)"

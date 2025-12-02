@@ -20,7 +20,7 @@ from scheduler_service import TaskScheduler
 load_dotenv()
 
 # API配置
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:24314")
 API_TOKEN = os.getenv("API_TOKEN", "Abcd123456")
 
 async def test_d1_scheduler_integration():

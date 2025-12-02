@@ -11,7 +11,7 @@ def start_server():
     print("🚀 启动YouTube字幕批量处理服务...")
     print("📁 数据库文件: youtube_channels.db")
     print("🍪 Cookie目录: ./cookies/")
-    print("📖 API文档: http://localhost:8000/docs")
+    print("📖 API文档: http://localhost:24314/docs")
     print("-" * 50)
     
     # 确保必要的目录存在
@@ -23,7 +23,7 @@ def start_server():
     uvicorn.run(
         "main:app", 
         host="0.0.0.0", 
-        port=8000, 
+        port=24314, 
         reload=True,
         log_level="info"
     )
