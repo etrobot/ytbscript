@@ -10,3 +10,5 @@ wheels/
 .venv
 cookies/
 .DS_Store
+.env
+youtube_channels.db

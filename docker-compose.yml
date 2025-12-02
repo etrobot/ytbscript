@@ -8,6 +8,13 @@ services:
     volumes:
       - ytbscript_downloads:/tmp/ytbscript_downloads
       - ytbscript_cookies:/tmp/ytbscript_cookies
+    environment:
+      - PYTHONUNBUFFERED=1
+      - API_TOKEN=${API_TOKEN:-Abcd123456}
+      - API_TOKEN_HEADER=${API_TOKEN_HEADER:-X-API-Token}
+      - TOKEN_PREFIX=${TOKEN_PREFIX:-}
+    env_file:
+      - .env
     networks:
       - traefik
     labels:

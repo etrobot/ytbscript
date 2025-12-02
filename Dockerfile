@@ -13,6 +13,11 @@ RUN apt-get update && apt-get install -y \
 COPY pyproject.toml .
 COPY uv.lock .
 COPY main.py .
+COPY subtitle_utils.py .
+COPY task_manager.py .
+COPY youtube_channel_processor.py .
+COPY startup.py .
+COPY .env* .
 
 # 安装uv包管理器
 RUN pip install uv

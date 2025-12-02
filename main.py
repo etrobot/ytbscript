@@ -1,22 +1,117 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, HttpUrl
-from typing import Optional
+from typing import Optional, Dict
 import yt_dlp
 import shutil
 from pathlib import Path
 import re
 import tempfile
+import asyncio
+from datetime import datetime
+from subtitle_utils import vtt_to_json
+import os
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
+
+# Token 配置
+API_TOKEN = os.getenv("API_TOKEN", "Abcd123456")
+TOKEN_HEADER = os.getenv("API_TOKEN_HEADER", "X-API-Token")
+TOKEN_PREFIX = os.getenv("TOKEN_PREFIX", "")
 
 app = FastAPI(
-    title="YouTube Subtitle Service",
-    description="YouTube 字幕下载服务",
-    version="2.0.0"
+    title="YouTube Subtitle Service", 
+    description="YouTube 字幕下载和批量处理服务",
+    version="2.1.0"
 )
 
 # 使用项目本地目录
 BASE_DIR = Path(__file__).parent.absolute()
 COOKIE_DIR = BASE_DIR / "cookies"
 COOKIE_DIR.mkdir(exist_ok=True)
+
+# Token 验证函数
+async def verify_token(x_api_token: str = Header(None, alias="X-API-Token")):
+    """
+    验证API Token
+    
+    支持两种方式:
+    1. Header: X-API-Token: Abcd123456
+    2. Authorization: Bearer Abcd123456 (如果配置了TOKEN_PREFIX)
+    """
+    if not x_api_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少API Token，请在请求头中添加 X-API-Token",
+            headers={"WWW-Authenticate": "Token"}
+        )
+    
+    # 移除前缀（如果配置了）
+    token = x_api_token
+    if TOKEN_PREFIX and token.startswith(TOKEN_PREFIX + " "):
+        token = token[len(TOKEN_PREFIX) + 1:]
+    
+    if token != API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的API Token",
+            headers={"WWW-Authenticate": "Token"}
+        )
+    
+    return True
+
+# 可选：支持Authorization header的Bearer token
+security = HTTPBearer(auto_error=False)
+
+async def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """备用的Bearer token验证"""
+    if not credentials:
+        return None
+        
+    if credentials.credentials != API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的Bearer Token",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    return True
+
+async def verify_any_token(
+    x_api_token: str = Header(None, alias="X-API-Token"),
+    bearer_token: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    灵活的token验证：支持X-API-Token header或Authorization Bearer
+    """
+    # 优先检查X-API-Token header
+    if x_api_token:
+        if x_api_token == API_TOKEN:
+            return True
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效的API Token"
+            )
+    
+    # 检查Bearer token
+    if bearer_token:
+        if bearer_token.credentials == API_TOKEN:
+            return True
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效的Bearer Token"
+            )
+    
+    # 都没有提供token
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="缺少认证信息，请提供 X-API-Token header 或 Authorization Bearer token",
+        headers={"WWW-Authenticate": "Token, Bearer"}
+    )
 
 
 class SaveCookieRequest(BaseModel):
@@ -32,104 +127,85 @@ class DownloadRequest(BaseModel):
     subtitle_lang: str = "en"
 
 
-def vtt_to_json(vtt_path):
+class ChannelBatchRequest(BaseModel):
+    """频道批量处理请求模型"""
+    channel_url: HttpUrl
+    max_videos: int = 50
+    subtitle_lang: str = "en"
+
+
+@app.get("/health")
+async def health_check():
     """
-    将 VTT 字幕文件转换为 JSON 格式，处理重叠的时间戳并去重
+    健康检查端点（无需认证）
+    """
+    return {
+        "status": "healthy",
+        "service": "YouTube Subtitle Service",
+        "version": "2.1.0",
+        "authentication": "enabled",
+        "message": "服务正常运行，所有API需要token认证"
+    }
+
+
+@app.get("/auth/info")
+async def auth_info(token_valid: bool = Depends(verify_any_token)):
+    """
+    获取认证信息（需要有效token）
+    """
+    return {
+        "authenticated": True,
+        "token_valid": True,
+        "message": "Token认证成功",
+        "token_methods": [
+            "X-API-Token header",
+            "Authorization Bearer token"
+        ],
+        "example_usage": {
+            "curl_header": "curl -H 'X-API-Token: Abcd123456' http://localhost:8001/cookie/list",
+            "curl_bearer": "curl -H 'Authorization: Bearer Abcd123456' http://localhost:8001/cookie/list"
+        }
+    }
+
+
+@app.get("/cookie/list")
+async def list_cookies(token_valid: bool = Depends(verify_any_token)):
+    """
+    列出所有Cookie文件和状态
+    
+    返回:
+    {
+        "cookies": [
+            {
+                "name": "test_cookies.txt",
+                "size": 1024,
+                "modified": "2024-01-01T12:00:00",
+                "path": "/cookies/test_cookies.txt"
+            }
+        ]
+    }
     """
     try:
-        with open(vtt_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # 移除 WEBVTT 头部信息
-        content = re.sub(r'^WEBVTT.*?\n\n', '', content, flags=re.DOTALL)
-
-        # 分割成字幕块
-        blocks = re.split(r'\n\n+', content.strip())
-
-        # 第一步：解析并去除完全重复的字幕
-        unique_subtitles = []
-        time_re = re.compile(r'(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})')
-        seen_subtitles = set()
-
-        if len(blocks) > 0:
-            for block in blocks:
-                lines = block.strip().split('\n')
-                if len(lines) < 2:
-                    continue
-
-                # 查找时间行
-                time_match = None
-                for line in lines:
-                    match = time_re.search(line)
-                    if match:
-                        time_match = match
-                        break
-
-                if not time_match:
-                    continue
-
-                start_time, end_time = time_match.groups()
-
-                # 获取字幕文本（跳过时间行和 align/position 信息）
-                subtitle_lines = []
-                for line in lines:
-                    if time_re.search(line) or 'align:' in line or 'position:' in line:
-                        continue
-                    clean_line = re.sub(r'<[^>]+>', '', line)
-                    clean_line = re.sub(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', '', clean_line)
-                    if clean_line.strip():
-                        subtitle_lines.append(clean_line.strip())
-
-                subtitle_text = ' '.join(subtitle_lines).strip()
-
-                if not subtitle_text:
-                    continue
-
-                # 使用时间戳+文本作为唯一标识
-                subtitle_key = f"{start_time}_{end_time}_{subtitle_text}"
-
-                if subtitle_key in seen_subtitles:
-                    continue
-
-                seen_subtitles.add(subtitle_key)
-
-                unique_subtitles.append({
-                    "time": f"{start_time} --> {end_time}",
-                    "start": start_time,
-                    "end": end_time,
-                    "subtitle": subtitle_text
-                })
-
-        # 第二步：处理相邻字幕的重复部分
-        processed_subtitles = []
-        for i, item in enumerate(unique_subtitles):
-            current_text = item['subtitle']
-
-            if i == 0:
-                processed_subtitles.append(item)
-                continue
-
-            prev_text = processed_subtitles[-1]['subtitle']
-
-            if current_text in prev_text:
-                continue
-
-            if current_text.startswith(prev_text):
-                current_text = current_text[len(prev_text):].strip()
-
-            if current_text.strip():
-                new_item = item.copy()
-                new_item['subtitle'] = current_text
-                processed_subtitles.append(new_item)
-
-        return processed_subtitles
-
+        cookies = []
+        for cookie_file in COOKIE_DIR.glob("*.txt"):
+            stat_info = cookie_file.stat()
+            cookies.append({
+                "name": cookie_file.name,
+                "size": stat_info.st_size,
+                "modified": datetime.fromtimestamp(stat_info.st_mtime).isoformat(),
+                "path": str(cookie_file.relative_to(BASE_DIR))
+            })
+        
+        return {
+            "total_cookies": len(cookies),
+            "cookies": cookies
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"转换 VTT 到 JSON 时出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取Cookie列表失败: {str(e)}")
 
 
 @app.post("/cookie/save")
-async def save_cookie(request: SaveCookieRequest):
+async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(verify_any_token)):
     """
     保存 Cookie 到本地
     
@@ -158,7 +234,7 @@ async def save_cookie(request: SaveCookieRequest):
 
 
 @app.post("/subtitle/download")
-async def download_subtitles(request: DownloadRequest):
+async def download_subtitles(request: DownloadRequest, token_valid: bool = Depends(verify_any_token)):
     """
     下载字幕并返回 JSON，同时更新 Cookie
     
@@ -191,11 +267,18 @@ async def download_subtitles(request: DownloadRequest):
     }
     
     try:
+        # 获取原始Cookie文件的修改时间
+        original_mtime = cookie_path.stat().st_mtime if cookie_path.exists() else 0
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(str(request.url), download=True)
             
-            # 更新 Cookie 文件
-            # yt-dlp 会自动更新 cookiefile 指定的文件
+            # 检查Cookie文件是否被更新
+            cookie_updated = False
+            if cookie_path.exists():
+                new_mtime = cookie_path.stat().st_mtime
+                if new_mtime > original_mtime:
+                    cookie_updated = True
             
             # 获取下载的字幕文件
             subtitle_files = list(temp_dir.glob('*.vtt'))
@@ -216,6 +299,9 @@ async def download_subtitles(request: DownloadRequest):
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=f"字幕转换失败: {str(e)}")
             
+            # 构造返回消息
+            cookie_msg = "Cookie 已更新" if cookie_updated else "Cookie 未更新"
+            
             return {
                 "status": "success",
                 "title": info.get('title', 'Unknown'),
@@ -223,7 +309,8 @@ async def download_subtitles(request: DownloadRequest):
                 "uploader": info.get('uploader'),
                 "subtitle_count": len(subtitles_data[0]['subtitles']) if subtitles_data else 0,
                 "subtitles": subtitles_data,
-                "message": "字幕下载成功，Cookie 已更新"
+                "cookie_updated": cookie_updated,
+                "message": f"字幕下载成功，{cookie_msg}"
             }
     
     except HTTPException:
@@ -235,6 +322,354 @@ async def download_subtitles(request: DownloadRequest):
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
 
+
+@app.post("/channel/batch-process")
+async def batch_process_channel(request: ChannelBatchRequest, token_valid: bool = Depends(verify_any_token)):
+    """
+    创建批量处理任务（异步）
+    
+    请求体:
+    {
+        "channel_url": "https://www.youtube.com/@example",
+        "max_videos": 50,
+        "subtitle_lang": "en"
+    }
+    
+    返回:
+    {
+        "task_id": "uuid-string",
+        "status": "pending",
+        "message": "任务已创建，正在队列中等待处理"
+    }
+    """
+    try:
+        from task_manager import get_task_manager, TaskType
+        
+        task_manager = get_task_manager()
+        
+        # 创建任务
+        task_params = {
+            'channel_url': str(request.channel_url),
+            'max_videos': request.max_videos,
+            'subtitle_lang': request.subtitle_lang
+        }
+        
+        task_id = task_manager.create_task(TaskType.BATCH_PROCESS, task_params)
+        
+        # 立即启动任务
+        await task_manager.start_task(task_id)
+        
+        return {
+            "task_id": task_id,
+            "status": "running", 
+            "message": "任务已创建并开始处理",
+            "check_status_url": f"/tasks/{task_id}/status"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建任务失败: {str(e)}")
+
+
+@app.post("/channel/batch-process-sync")
+async def batch_process_channel_sync(request: ChannelBatchRequest, token_valid: bool = Depends(verify_any_token)):
+    """
+    批量处理YouTube频道视频并提取字幕（同步版本，兼容旧接口）
+    """
+    try:
+        from youtube_channel_processor import get_processor
+        
+        processor = get_processor()
+        
+        # 执行批量处理
+        result = await processor.process_channel_batch(
+            channel_url=str(request.channel_url),
+            max_videos=request.max_videos,
+            subtitle_lang=request.subtitle_lang
+        )
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"批量处理失败: {str(e)}")
+
+
+@app.get("/tasks/{task_id}/status")
+async def get_task_status(task_id: str, token_valid: bool = Depends(verify_any_token)):
+    """
+    获取任务状态
+    
+    返回:
+    {
+        "task_id": "uuid-string",
+        "status": "running",
+        "progress": 45,
+        "total_items": 100,
+        "current_item": "正在处理: 视频标题...",
+        "created_at": "2024-01-01T12:00:00",
+        "result": {...}  // 仅在完成时返回
+    }
+    """
+    try:
+        from task_manager import get_task_manager
+        
+        task_manager = get_task_manager()
+        task_info = task_manager.get_task_status(task_id)
+        
+        if not task_info:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        
+        return task_info
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
+
+
+@app.get("/tasks")
+async def get_all_tasks(status: Optional[str] = None, limit: int = 50, token_valid: bool = Depends(verify_any_token)):
+    """
+    获取所有任务列表
+    
+    参数:
+        status: 可选，筛选特定状态的任务 (pending/running/completed/failed/cancelled)
+        limit: 返回数量限制
+    """
+    try:
+        from task_manager import get_task_manager, TaskStatus
+        
+        task_manager = get_task_manager()
+        
+        # 转换状态参数
+        status_filter = None
+        if status:
+            try:
+                status_filter = TaskStatus(status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"无效的状态值: {status}")
+        
+        tasks = task_manager.get_all_tasks(status_filter, limit)
+        
+        return {
+            "total_tasks": len(tasks),
+            "tasks": tasks
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")
+
+
+@app.delete("/tasks/{task_id}")
+async def cancel_task(task_id: str, token_valid: bool = Depends(verify_any_token)):
+    """
+    取消任务
+    
+    返回:
+    {
+        "task_id": "uuid-string",
+        "status": "cancelled",
+        "message": "任务已取消"
+    }
+    """
+    try:
+        from task_manager import get_task_manager
+        
+        task_manager = get_task_manager()
+        success = task_manager.cancel_task(task_id)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="无法取消任务，任务可能已完成或不存在")
+        
+        return {
+            "task_id": task_id,
+            "status": "cancelled",
+            "message": "任务已取消"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
+
+
+@app.get("/channel/stats")
+async def get_channel_stats(channel_id: Optional[str] = None, token_valid: bool = Depends(verify_any_token)):
+    """
+    获取频道统计信息
+    
+    参数:
+        channel_id: 可选，指定频道ID获取单个频道统计，否则返回总体统计
+    
+    返回:
+        频道统计信息
+    """
+    try:
+        from youtube_channel_processor import get_processor
+        processor = get_processor()
+        stats = processor.get_channel_stats(channel_id)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取统计信息失败: {str(e)}")
+
+
+@app.get("/videos/search")
+async def search_videos_by_subtitle(
+    query: str,
+    channel_id: Optional[str] = None,
+    limit: int = 20,
+    token_valid: bool = Depends(verify_any_token)
+):
+    """
+    根据字幕内容搜索视频
+    
+    参数:
+        query: 搜索关键词
+        channel_id: 可选，限制在指定频道内搜索
+        limit: 返回结果数量限制
+    
+    返回:
+        匹配的视频和字幕片段列表
+    """
+    try:
+        from youtube_channel_processor import get_processor
+        processor = get_processor()
+        
+        # 构建SQL查询 - 搜索JSON字段中的字幕
+        with processor.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            if channel_id:
+                cursor.execute('''
+                    SELECT v.video_id, v.title, v.url, v.uploader, v.subtitle_json, v.subtitle_language
+                    FROM videos v
+                    WHERE v.channel_id = ? 
+                    AND v.subtitle_extracted = TRUE 
+                    AND v.subtitle_json LIKE ?
+                    ORDER BY v.upload_date DESC
+                    LIMIT ?
+                ''', (channel_id, f'%{query}%', limit))
+            else:
+                cursor.execute('''
+                    SELECT v.video_id, v.title, v.url, v.uploader, v.subtitle_json, v.subtitle_language
+                    FROM videos v
+                    WHERE v.subtitle_extracted = TRUE 
+                    AND v.subtitle_json LIKE ?
+                    ORDER BY v.upload_date DESC
+                    LIMIT ?
+                ''', (f'%{query}%', limit))
+            
+            results = cursor.fetchall()
+            
+            # 解析JSON并查找匹配的字幕片段
+            import json
+            videos = []
+            
+            for row in results:
+                video_id, title, url, uploader, subtitle_json_str, language = row
+                
+                if not subtitle_json_str:
+                    continue
+                
+                try:
+                    subtitle_json = json.loads(subtitle_json_str)
+                    
+                    # 查找包含查询关键词的字幕片段
+                    matched_segments = []
+                    for segment in subtitle_json:
+                        if query.lower() in segment.get('subtitle', '').lower():
+                            matched_segments.append({
+                                'subtitle_text': segment['subtitle'],
+                                'start_time': segment['start'],
+                                'end_time': segment['end'],
+                                'time_range': segment['time']
+                            })
+                    
+                    if matched_segments:
+                        videos.append({
+                            'video_id': video_id,
+                            'title': title,
+                            'url': url,
+                            'uploader': uploader,
+                            'subtitle_language': language,
+                            'matched_segments': matched_segments,
+                            'total_matches': len(matched_segments)
+                        })
+                        
+                except json.JSONDecodeError:
+                    continue
+            
+            return {
+                'query': query,
+                'total_results': len(videos),
+                'videos': videos
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+
+
+@app.get("/videos/{video_id}/subtitles")
+async def get_video_subtitles(video_id: str, token_valid: bool = Depends(verify_any_token)):
+    """
+    获取指定视频的完整字幕JSON
+    
+    参数:
+        video_id: 视频ID
+    
+    返回:
+        视频的完整字幕数据
+    """
+    try:
+        from youtube_channel_processor import get_processor
+        processor = get_processor()
+        
+        with processor.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT title, url, uploader, subtitle_language, subtitle_json, upload_date
+                FROM videos 
+                WHERE video_id = ? AND subtitle_extracted = TRUE
+            ''', (video_id,))
+            
+            result = cursor.fetchone()
+            
+            if not result:
+                raise HTTPException(status_code=404, detail="视频未找到或字幕未提取")
+            
+            title, url, uploader, language, subtitle_json_str, upload_date = result
+            
+            import json
+            try:
+                subtitle_json = json.loads(subtitle_json_str) if subtitle_json_str else []
+            except json.JSONDecodeError:
+                subtitle_json = []
+            
+            return {
+                'video_id': video_id,
+                'title': title,
+                'url': url,
+                'uploader': uploader,
+                'upload_date': upload_date,
+                'subtitle_language': language,
+                'subtitle_count': len(subtitle_json),
+                'subtitles': subtitle_json
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取字幕失败: {str(e)}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时初始化"""
+    from youtube_channel_processor import get_processor
+    from task_manager import get_task_manager
+    
+    # 初始化处理器，确保数据库表已创建
+    processor = get_processor()
+    print("✅ YouTube频道处理器已初始化")
+    print("✅ 数据库表已创建")
+    
+    # 初始化任务管理器
+    task_manager = get_task_manager()
+    print("✅ 任务管理器已初始化")
+    print("✅ 任务队列系统已就绪")
 
 if __name__ == "__main__":
     import uvicorn
