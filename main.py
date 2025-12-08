@@ -123,7 +123,7 @@ class SaveCookieRequest(BaseModel):
 class DownloadRequest(BaseModel):
     """字幕下载请求模型"""
     url: HttpUrl
-    cookie_file: str  # Cookie 文件名（从 ./cookies/ 目录读取）
+    cookie: Optional[str] = None  # Cookie 内容字符串（可选，不传则使用本地 ./cookies/ 目录的文件）
     subtitle_lang: str = "en"
 
 
@@ -236,19 +236,38 @@ async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(ve
 @app.post("/subtitle/download")
 async def download_subtitles(request: DownloadRequest, token_valid: bool = Depends(verify_any_token)):
     """
-    下载字幕并返回 JSON，同时更新 Cookie
+    下载字幕并返回 JSON
     
     请求体:
     {
         "url": "视频 URL",
-        "cookie_file": "youtube_cookies.txt",
+        "cookie": "cookie字符串内容",  // 可选，不传则使用本地 ./cookies/ 目录的文件
         "subtitle_lang": "en"
     }
     """
-    # 检查 Cookie 文件是否存在
-    cookie_path = COOKIE_DIR / request.cookie_file
-    if not cookie_path.exists():
-        raise HTTPException(status_code=404, detail=f"Cookie 文件 '{request.cookie_file}' 不存在")
+    # 处理 Cookie
+    cookie_path = None
+    cookie_source = None
+    temp_cookie_file = None
+    
+    if request.cookie:
+        # 如果传了cookie字符串，创建临时cookie文件
+        temp_cookie_file = Path(tempfile.mktemp(suffix=".txt", prefix="ytbscript_cookie_"))
+        with open(temp_cookie_file, 'w', encoding='utf-8') as f:
+            f.write(request.cookie)
+        cookie_path = temp_cookie_file
+        cookie_source = "请求参数"
+        print(f"使用请求中的Cookie字符串")
+    else:
+        # 自动查找本地cookie文件
+        cookie_files = list(COOKIE_DIR.glob("*.txt"))
+        if cookie_files:
+            cookie_path = cookie_files[0]
+            cookie_source = f"本地文件: {cookie_path.name}"
+            print(f"自动使用本地Cookie文件: {cookie_path.name}")
+        else:
+            print("警告: 未找到Cookie，可能会遇到访问限制")
+            cookie_source = "无"
     
     # 创建临时目录用于下载字幕
     temp_dir = Path(tempfile.mkdtemp(prefix="ytbscript_temp_"))
@@ -260,25 +279,18 @@ async def download_subtitles(request: DownloadRequest, token_valid: bool = Depen
         'writeautomaticsub': True,
         'subtitleslangs': [request.subtitle_lang],
         'subtitlesformat': 'vtt',
-        'cookiefile': str(cookie_path),
         'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
         'quiet': False,
         'no_warnings': False,
     }
     
+    # 如果有cookie，添加到配置中
+    if cookie_path:
+        ydl_opts['cookiefile'] = str(cookie_path)
+    
     try:
-        # 获取原始Cookie文件的修改时间
-        original_mtime = cookie_path.stat().st_mtime if cookie_path.exists() else 0
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(str(request.url), download=True)
-            
-            # 检查Cookie文件是否被更新
-            cookie_updated = False
-            if cookie_path.exists():
-                new_mtime = cookie_path.stat().st_mtime
-                if new_mtime > original_mtime:
-                    cookie_updated = True
             
             # 获取下载的字幕文件
             subtitle_files = list(temp_dir.glob('*.vtt'))
@@ -299,9 +311,6 @@ async def download_subtitles(request: DownloadRequest, token_valid: bool = Depen
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=f"字幕转换失败: {str(e)}")
             
-            # 构造返回消息
-            cookie_msg = "Cookie 已更新" if cookie_updated else "Cookie 未更新"
-            
             return {
                 "status": "success",
                 "title": info.get('title', 'Unknown'),
@@ -309,8 +318,8 @@ async def download_subtitles(request: DownloadRequest, token_valid: bool = Depen
                 "uploader": info.get('uploader'),
                 "subtitle_count": len(subtitles_data[0]['subtitles']) if subtitles_data else 0,
                 "subtitles": subtitles_data,
-                "cookie_updated": cookie_updated,
-                "message": f"字幕下载成功，{cookie_msg}"
+                "cookie_source": cookie_source,
+                "message": f"字幕下载成功，Cookie来源: {cookie_source}"
             }
     
     except HTTPException:
@@ -321,6 +330,9 @@ async def download_subtitles(request: DownloadRequest, token_valid: bool = Depen
         # 清理临时目录
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
+        # 清理临时cookie文件
+        if temp_cookie_file and temp_cookie_file.exists():
+            temp_cookie_file.unlink()
 
 
 @app.post("/channel/batch-process")
