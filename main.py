@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, Dict
+from contextlib import asynccontextmanager
 import yt_dlp
 import shutil
 from pathlib import Path
@@ -10,6 +12,7 @@ import tempfile
 import asyncio
 from datetime import datetime
 from subtitle_utils import vtt_to_json
+from cookie_utils import save_cookie_string_as_netscape, cookie_string_to_netscape
 import os
 from dotenv import load_dotenv
 
@@ -21,10 +24,29 @@ API_TOKEN = os.getenv("API_TOKEN", "Abcd123456")
 TOKEN_HEADER = os.getenv("API_TOKEN_HEADER", "X-API-Token")
 TOKEN_PREFIX = os.getenv("TOKEN_PREFIX", "")
 
+
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    """统一的生命周期管理，替代 on_event"""
+    from youtube_channel_processor import get_processor
+    from task_manager import get_task_manager
+
+    processor = get_processor()
+    print("✅ YouTube频道处理器已初始化")
+    print("✅ 数据库表已创建")
+
+    task_manager = get_task_manager()
+    print("✅ 任务管理器已初始化")
+    print("✅ 任务队列系统已就绪")
+
+    yield
+
+
 app = FastAPI(
     title="YouTube Subtitle Service", 
     description="YouTube 字幕下载和批量处理服务",
-    version="2.1.0"
+    version="2.1.0",
+    lifespan=app_lifespan
 )
 
 # 使用项目本地目录
@@ -117,13 +139,13 @@ async def verify_any_token(
 class SaveCookieRequest(BaseModel):
     """保存 Cookie 请求模型"""
     cookie_name: str
-    cookie_content: str
+    cookie_content: str  # Cookie 字符串，将自动转换为 Netscape 格式
 
 
 class DownloadRequest(BaseModel):
     """字幕下载请求模型"""
     url: HttpUrl
-    cookie: Optional[str] = None  # Cookie 内容字符串（可选，不传则使用本地 ./cookies/ 目录的文件）
+    cookie: Optional[str] = None  # Cookie 内容字符串（可选，不传则使用本地 ./cookies/ 目录的文件，自动转换为 Netscape 格式）
     subtitle_lang: str = "en"
 
 
@@ -132,7 +154,14 @@ class ChannelBatchRequest(BaseModel):
     channel_url: HttpUrl
     max_videos: int = 50
     subtitle_lang: str = "en"
+    cookie: Optional[str] = None  # Cookie 内容字符串（可选，自动转换为 Netscape 格式）
 
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    """返回首页HTML"""
+    with open("index.html", "r", encoding="utf-8") as f:
+        return f.read()
 
 @app.get("/health")
 async def health_check():
@@ -162,71 +191,39 @@ async def auth_info(token_valid: bool = Depends(verify_any_token)):
             "Authorization Bearer token"
         ],
         "example_usage": {
-            "curl_header": "curl -H 'X-API-Token: Abcd123456' http://localhost:8001/cookie/list",
-            "curl_bearer": "curl -H 'Authorization: Bearer Abcd123456' http://localhost:8001/cookie/list"
+            "curl_header": "curl -H 'X-API-Token: Abcd123456' http://localhost:8001/health",
+            "curl_bearer": "curl -H 'Authorization: Bearer Abcd123456' http://localhost:8001/health"
         }
     }
-
-
-@app.get("/cookie/list")
-async def list_cookies(token_valid: bool = Depends(verify_any_token)):
-    """
-    列出所有Cookie文件和状态
-    
-    返回:
-    {
-        "cookies": [
-            {
-                "name": "test_cookies.txt",
-                "size": 1024,
-                "modified": "2024-01-01T12:00:00",
-                "path": "/cookies/test_cookies.txt"
-            }
-        ]
-    }
-    """
-    try:
-        cookies = []
-        for cookie_file in COOKIE_DIR.glob("*.txt"):
-            stat_info = cookie_file.stat()
-            cookies.append({
-                "name": cookie_file.name,
-                "size": stat_info.st_size,
-                "modified": datetime.fromtimestamp(stat_info.st_mtime).isoformat(),
-                "path": str(cookie_file.relative_to(BASE_DIR))
-            })
-        
-        return {
-            "total_cookies": len(cookies),
-            "cookies": cookies
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取Cookie列表失败: {str(e)}")
 
 
 @app.post("/cookie/save")
 async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(verify_any_token)):
     """
-    保存 Cookie 到本地
+    保存 Cookie 到本地（自动转换为 Netscape 格式）
     
     请求体:
     {
         "cookie_name": "youtube_cookies",
-        "cookie_content": "Cookie 内容字符串"
+        "cookie_content": "Cookie 内容字符串（支持 JSON、Header 等格式，自动转换为 Netscape 格式）"
     }
     """
     filename = request.cookie_name if request.cookie_name.endswith('.txt') else f"{request.cookie_name}.txt"
     cookie_path = COOKIE_DIR / filename
     
     try:
+        # 转换 Cookie 字符串为 Netscape 格式
+        netscape_content = cookie_string_to_netscape(request.cookie_content)
+        
         with open(cookie_path, 'w', encoding='utf-8') as f:
-            f.write(request.cookie_content)
+            f.write(netscape_content)
         
         return {
             "status": "success",
-            "message": f"Cookie 文件 '{filename}' 保存成功",
+            "message": f"Cookie 文件 '{filename}' 保存成功（已转换为 Netscape 格式）",
             "cookie_name": filename,
-            "path": str(cookie_path)
+            "path": str(cookie_path),
+            "format": "Netscape"
         }
     
     except Exception as e:
@@ -241,7 +238,7 @@ async def download_subtitles(request: DownloadRequest, token_valid: bool = Depen
     请求体:
     {
         "url": "视频 URL",
-        "cookie": "cookie字符串内容",  // 可选，不传则使用本地 ./cookies/ 目录的文件
+        "cookie": "cookie字符串内容",  // 可选，不传则使用本地 ./cookies/ 目录的文件，支持多种格式自动转换为 Netscape 格式
         "subtitle_lang": "en"
     }
     """
@@ -251,23 +248,21 @@ async def download_subtitles(request: DownloadRequest, token_valid: bool = Depen
     temp_cookie_file = None
     
     if request.cookie:
-        # 如果传了cookie字符串，创建临时cookie文件
-        temp_cookie_file = Path(tempfile.mktemp(suffix=".txt", prefix="ytbscript_cookie_"))
-        with open(temp_cookie_file, 'w', encoding='utf-8') as f:
-            f.write(request.cookie)
+        # 如果传了cookie字符串，转换为Netscape格式并创建临时cookie文件
+        temp_cookie_file = save_cookie_string_as_netscape(request.cookie)
         cookie_path = temp_cookie_file
-        cookie_source = "请求参数"
-        print(f"使用请求中的Cookie字符串")
+        cookie_source = "请求参数（已转换为Netscape格式）"
+        print(f"使用请求中的Cookie字符串（已转换为Netscape格式）")
     else:
-        # 自动查找本地cookie文件
-        cookie_files = list(COOKIE_DIR.glob("*.txt"))
-        if cookie_files:
-            cookie_path = cookie_files[0]
-            cookie_source = f"本地文件: {cookie_path.name}"
-            print(f"自动使用本地Cookie文件: {cookie_path.name}")
+        # 使用固定的cookie文件
+        cookie_path = COOKIE_DIR / "cookies.txt"
+        if cookie_path.exists():
+            cookie_source = "本地文件: cookies.txt"
+            print(f"使用Cookie文件: cookies.txt")
         else:
-            print("警告: 未找到Cookie，可能会遇到访问限制")
+            cookie_path = None
             cookie_source = "无"
+            print("警告: 未找到 cookies.txt，可能会遇到访问限制")
     
     # 创建临时目录用于下载字幕
     temp_dir = Path(tempfile.mkdtemp(prefix="ytbscript_temp_"))
@@ -396,7 +391,8 @@ async def batch_process_channel_sync(request: ChannelBatchRequest, token_valid: 
         result = await processor.process_channel_batch(
             channel_url=str(request.channel_url),
             max_videos=request.max_videos,
-            subtitle_lang=request.subtitle_lang
+            subtitle_lang=request.subtitle_lang,
+            cookie_string=request.cookie
         )
         
         return result
@@ -666,22 +662,6 @@ async def get_video_subtitles(video_id: str, token_valid: bool = Depends(verify_
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取字幕失败: {str(e)}")
 
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时初始化"""
-    from youtube_channel_processor import get_processor
-    from task_manager import get_task_manager
-    
-    # 初始化处理器，确保数据库表已创建
-    processor = get_processor()
-    print("✅ YouTube频道处理器已初始化")
-    print("✅ 数据库表已创建")
-    
-    # 初始化任务管理器
-    task_manager = get_task_manager()
-    print("✅ 任务管理器已初始化")
-    print("✅ 任务队列系统已就绪")
 
 if __name__ == "__main__":
     import uvicorn

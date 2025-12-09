@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cookie Save</title>
+</head>
+<body>
+    <form id="cookieForm">
+        <input type="text" id="token" placeholder="token">
+        <textarea id="cookieString" rows="10" cols="50" placeholder="cookie string"></textarea>
+        <button type="submit">Submit</button>
+    </form>
+
+    <script>
+        document.getElementById('cookieForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const token = document.getElementById('token').value;
+            const cookieString = document.getElementById('cookieString').value;
+            
+            try {
+                const response = await fetch('/cookie/save', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        cookie_name: 'cookies',
+                        cookie_content: cookieString
+                    })
+                });
+                
+                const result = await response.json();
+                alert(JSON.stringify(result, null, 2));
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        });
+    </script>
+</body>
+</html>

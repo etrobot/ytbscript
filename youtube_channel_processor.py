@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from subtitle_utils import vtt_to_json
+from cookie_utils import save_cookie_string_as_netscape
 import logging
 
 # 配置日志
@@ -76,13 +77,14 @@ class YouTubeChannelProcessor:
             conn.commit()
             logger.info("数据库初始化完成")
     
-    def get_channel_videos(self, channel_url: str, max_videos: int = 50) -> List[Dict]:
+    def get_channel_videos(self, channel_url: str, max_videos: int = 50, cookie_string: Optional[str] = None) -> List[Dict]:
         """
         获取频道最新视频列表
         
         Args:
             channel_url: YouTube频道URL
             max_videos: 最大视频数量
+            cookie_string: 可选的cookie字符串，自动转换为Netscape格式
             
         Returns:
             视频信息列表
@@ -91,20 +93,41 @@ class YouTubeChannelProcessor:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': True,  # 只获取视频列表，不下载
+            # 不使用 extract_flat，获取完整的视频信息
             'playlistend': max_videos,  # 限制视频数量
         }
         
-        # 自动查找cookie文件
-        cookie_files = list(COOKIE_DIR.glob("*.txt"))
-        if cookie_files:
-            # 使用第一个找到的cookie文件
-            cookie_path = cookie_files[0]
-            ydl_opts['cookiefile'] = str(cookie_path)
-            logger.info(f"使用Cookie文件: {cookie_path.name}")
+        # 处理Cookie
+        temp_cookie_file = None
+        if cookie_string:
+            # 使用传入的cookie字符串，转换为Netscape格式
+            temp_cookie_file = save_cookie_string_as_netscape(cookie_string)
+            ydl_opts['cookiefile'] = str(temp_cookie_file)
+            logger.info("使用传入的Cookie字符串（已转换为Netscape格式）")
         else:
-            logger.warning("未找到Cookie文件，可能会遇到访问限制")
+            # 使用固定的cookie文件
+            cookie_path = COOKIE_DIR / "cookies.txt"
+            if cookie_path.exists():
+                ydl_opts['cookiefile'] = str(cookie_path)
+                logger.info("使用Cookie文件: cookies.txt")
+            else:
+                logger.warning("未找到 cookies.txt，可能会遇到访问限制")
         
+        def _flatten_entries(entries):
+            """展开嵌套的 playlist，确保获取真实视频条目"""
+            flat = []
+            queue = list(entries)
+            while queue:
+                entry = queue.pop(0)
+                if not entry:
+                    continue
+                entry_type = entry.get('_type')
+                if entry_type == 'playlist' and entry.get('entries'):
+                    queue = entry['entries'] + queue
+                    continue
+                flat.append(entry)
+            return flat
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(channel_url, download=False)
@@ -121,14 +144,30 @@ class YouTubeChannelProcessor:
                 
                 # 获取视频列表
                 videos = []
-                entries = info.get('entries', [])
+                entries = _flatten_entries(info.get('entries', []))
                 
-                for entry in entries[:max_videos]:
+                for entry in entries:
+                    if len(videos) >= max_videos:
+                        break
                     if entry:
+                        entry_type = entry.get('_type')
+                        if entry_type and entry_type not in (None, 'url', 'video'):
+                            logger.debug(f"跳过非视频条目: type={entry_type}, title={entry.get('title', '')}")
+                            continue
+                        video_id = entry.get('id', '')
+                        raw_url = entry.get('url') or entry.get('webpage_url')
+                        if raw_url and ("watch?v=" in raw_url or "/shorts/" in raw_url):
+                            video_url = raw_url
+                        elif video_id and len(video_id) == 11:
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                        else:
+                            logger.warning(f"跳过无法识别的视频条目: id={video_id}, url={raw_url}")
+                            continue
+                        
                         video_info = {
-                            'video_id': entry.get('id', ''),
+                            'video_id': video_id,
                             'title': entry.get('title', ''),
-                            'url': f"https://www.youtube.com/watch?v={entry.get('id', '')}",
+                            'url': video_url,
                             'duration': entry.get('duration'),
                             'upload_date': entry.get('upload_date'),
                             'uploader': entry.get('uploader') or channel_info['channel_name']
@@ -141,6 +180,10 @@ class YouTubeChannelProcessor:
         except Exception as e:
             logger.error(f"获取频道视频失败: {str(e)}")
             raise
+        finally:
+            # 清理临时cookie文件
+            if temp_cookie_file and temp_cookie_file.exists():
+                temp_cookie_file.unlink()
     
     def save_channel_and_videos(self, channel_info: Dict, videos: List[Dict]):
         """
@@ -187,7 +230,7 @@ class YouTubeChannelProcessor:
             logger.info(f"保存了频道 '{channel_info['channel_name']}' 和 {len(videos)} 个视频")
     
     def extract_video_subtitles(self, video_id: str, video_url: str, 
-                              subtitle_lang: str = "en") -> Optional[List[Dict]]:
+                              subtitle_lang: str = "en", cookie_string: Optional[str] = None) -> Optional[List[Dict]]:
         """
         提取单个视频的字幕
         
@@ -195,6 +238,7 @@ class YouTubeChannelProcessor:
             video_id: 视频ID
             video_url: 视频URL
             subtitle_lang: 字幕语言
+            cookie_string: 可选的cookie字符串，自动转换为Netscape格式
             
         Returns:
             字幕数据列表或None
@@ -212,11 +256,17 @@ class YouTubeChannelProcessor:
             'no_warnings': True,
         }
         
-        # 自动查找cookie文件
-        cookie_files = list(COOKIE_DIR.glob("*.txt"))
-        if cookie_files:
-            cookie_path = cookie_files[0]
-            ydl_opts['cookiefile'] = str(cookie_path)
+        # 处理Cookie
+        temp_cookie_file = None
+        if cookie_string:
+            # 使用传入的cookie字符串，转换为Netscape格式
+            temp_cookie_file = save_cookie_string_as_netscape(cookie_string)
+            ydl_opts['cookiefile'] = str(temp_cookie_file)
+        else:
+            # 使用固定的cookie文件
+            cookie_path = COOKIE_DIR / "cookies.txt"
+            if cookie_path.exists():
+                ydl_opts['cookiefile'] = str(cookie_path)
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -249,6 +299,9 @@ class YouTubeChannelProcessor:
             # 清理临时目录
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
+            # 清理临时cookie文件
+            if temp_cookie_file and temp_cookie_file.exists():
+                temp_cookie_file.unlink()
     
     def save_subtitles(self, subtitles_data: Dict, video_id: str):
         """
@@ -283,7 +336,8 @@ class YouTubeChannelProcessor:
             logger.info(f"保存了视频 {video_id} 的 {len(subtitles_data['subtitles'])} 条字幕到JSON字段")
     
     async def process_channel_batch(self, channel_url: str, 
-                                   max_videos: int = 50, subtitle_lang: str = "en") -> Dict:
+                                   max_videos: int = 50, subtitle_lang: str = "en", 
+                                   cookie_string: Optional[str] = None) -> Dict:
         """
         批量处理频道视频（异步串行处理）
         
@@ -291,6 +345,7 @@ class YouTubeChannelProcessor:
             channel_url: YouTube频道URL
             max_videos: 最大视频数量
             subtitle_lang: 字幕语言
+            cookie_string: 可选的cookie字符串，自动转换为Netscape格式
             
         Returns:
             处理结果统计
@@ -301,7 +356,7 @@ class YouTubeChannelProcessor:
         try:
             # 1. 获取频道视频列表
             logger.info("正在获取频道视频列表...")
-            channel_info, videos = self.get_channel_videos(channel_url, max_videos)
+            channel_info, videos = self.get_channel_videos(channel_url, max_videos, cookie_string)
             
             # 2. 保存频道和视频信息
             self.save_channel_and_videos(channel_info, videos)
@@ -331,7 +386,8 @@ class YouTubeChannelProcessor:
                 subtitles_data = self.extract_video_subtitles(
                     video['video_id'], 
                     video['url'], 
-                    subtitle_lang
+                    subtitle_lang,
+                    cookie_string
                 )
                 
                 if subtitles_data:
