@@ -13,10 +13,14 @@ RUN apt-get update && apt-get install -y \
 COPY pyproject.toml .
 COPY uv.lock .
 COPY main.py .
+COPY startup.py .
 COPY subtitle_utils.py .
 COPY task_manager.py .
 COPY youtube_channel_processor.py .
-COPY startup.py .
+COPY scheduler_service.py .
+COPY d1_client.py .
+COPY cookie_utils.py .
+COPY index.html .
 COPY .env* .
 
 # 安装uv包管理器
@@ -32,4 +36,4 @@ RUN mkdir -p /app/downloads /app/cookies
 EXPOSE 24314
 
 # 启动应用
-CMD ["uv", "run", "python", "main.py"]
+CMD ["uv", "run", "python", "startup.py"]

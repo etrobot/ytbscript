@@ -3,7 +3,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, HttpUrl
 from typing import Optional
-from contextlib import asynccontextmanager
 import yt_dlp
 import shutil
 from pathlib import Path
@@ -13,6 +12,7 @@ from cookie_utils import save_cookie_string_as_netscape, cookie_string_to_netsca
 import os
 from dotenv import load_dotenv
 import logging
+from datetime import datetime
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -27,28 +27,17 @@ TOKEN_HEADER = os.getenv("API_TOKEN_HEADER", "X-API-Token")
 TOKEN_PREFIX = os.getenv("TOKEN_PREFIX", "")
 
 
-@asynccontextmanager
-async def app_lifespan(app: FastAPI):
-    """统一的生命周期管理，替代 on_event"""
-    from youtube_channel_processor import get_processor
-    from task_manager import get_task_manager
+# 导入启动模块
+from startup import create_app_lifespan, get_app_config
 
-    processor = get_processor()
-    print("✅ YouTube频道处理器已初始化")
-    print("✅ 数据库表已创建")
-
-    task_manager = get_task_manager()
-    print("✅ 任务管理器已初始化")
-    print("✅ 任务队列系统已就绪")
-
-    yield
-
+# 获取应用配置
+app_config = get_app_config()
 
 app = FastAPI(
-    title="YouTube Subtitle Service", 
-    description="YouTube 字幕下载和批量处理服务",
-    version="2.1.0",
-    lifespan=app_lifespan
+    title=app_config["title"],
+    description=app_config["description"], 
+    version=app_config["version"],
+    lifespan=create_app_lifespan()
 )
 
 # 使用项目本地目录
@@ -177,6 +166,177 @@ async def health_check():
         "authentication": "enabled",
         "message": "服务正常运行，所有API需要token认证"
     }
+
+
+@app.get("/api/services/status")
+async def get_services_status():
+    """
+    获取所有服务运行状态
+    """
+    try:
+        from task_manager import get_task_manager
+        
+        services_status = {
+            "timestamp": datetime.now().isoformat(),
+            "services": {
+                "web_api": {
+                    "status": "running",
+                    "description": "FastAPI Web服务",
+                    "port": 24314,
+                    "version": "2.1.0"
+                },
+                "youtube_processor": {
+                    "status": "running",
+                    "description": "YouTube频道处理器"
+                },
+                "task_manager": {
+                    "status": "running", 
+                    "description": "任务队列管理器"
+                }
+            }
+        }
+        
+        # 检查调度服务状态
+        if hasattr(app.state, 'scheduler') and app.state.scheduler:
+            scheduler_running = app.state.scheduler.scheduler.running if app.state.scheduler.scheduler else False
+            thread_alive = app.state.scheduler_thread.is_alive() if app.state.scheduler_thread else False
+            
+            services_status["services"]["scheduler"] = {
+                "status": "running" if scheduler_running and thread_alive else "stopped",
+                "description": "AI总结定时调度服务",
+                "scheduler_running": scheduler_running,
+                "thread_alive": thread_alive,
+                "job_count": len(app.state.scheduler.scheduler.get_jobs()) if scheduler_running else 0
+            }
+            
+            # 获取D1数据库状态
+            try:
+                d1_status = "connected"
+                # 简单测试D1连接
+                app.state.scheduler.d1.execute("SELECT 1")
+            except Exception as e:
+                d1_status = f"error: {str(e)}"
+                
+            services_status["services"]["d1_database"] = {
+                "status": "connected" if d1_status == "connected" else "error",
+                "description": "Cloudflare D1数据库",
+                "details": d1_status
+            }
+            
+            # 获取OpenAI API状态
+            openai_configured = bool(os.getenv("OPENAI_API_KEY"))
+            services_status["services"]["openai_api"] = {
+                "status": "configured" if openai_configured else "not_configured",
+                "description": "OpenAI API服务",
+                "model": os.getenv("OPENAI_MODEL", "未配置"),
+                "base_url": os.getenv("OPENAI_BASE_URL", "default")
+            }
+        else:
+            services_status["services"]["scheduler"] = {
+                "status": "not_started",
+                "description": "AI总结定时调度服务",
+                "error": "调度服务未启动或启动失败"
+            }
+            
+        # 获取任务管理器统计
+        try:
+            task_manager = get_task_manager()
+            task_stats = task_manager.get_statistics()
+            services_status["services"]["task_manager"]["statistics"] = task_stats
+        except Exception as e:
+            services_status["services"]["task_manager"]["error"] = str(e)
+            
+        # 检查本地数据库
+        try:
+            from youtube_channel_processor import get_processor
+            processor = get_processor()
+            with processor.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM videos")
+                video_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM channels") 
+                channel_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM videos WHERE subtitle_extracted = 1")
+                subtitle_count = cursor.fetchone()[0]
+                
+            services_status["services"]["local_database"] = {
+                "status": "connected",
+                "description": "本地SQLite数据库", 
+                "statistics": {
+                    "total_videos": video_count,
+                    "total_channels": channel_count,
+                    "videos_with_subtitles": subtitle_count
+                }
+            }
+        except Exception as e:
+            services_status["services"]["local_database"] = {
+                "status": "error",
+                "description": "本地SQLite数据库",
+                "error": str(e)
+            }
+        
+        return services_status
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取服务状态失败: {str(e)}")
+
+
+@app.get("/api/scheduler/tasks")
+async def get_scheduled_tasks():
+    """
+    获取所有定时任务
+    """
+    result = {
+        "scheduler_status": "unknown",
+        "scheduled_tasks": [],
+        "recent_headlines": [],
+        "scheduler_jobs": [],
+        "errors": []
+    }
+    
+    try:
+        if not hasattr(app.state, 'scheduler') or not app.state.scheduler:
+            result["scheduler_status"] = "not_started"
+            result["errors"].append("调度服务未启动")
+            return result
+            
+        scheduler = app.state.scheduler
+        result["scheduler_status"] = "running" if scheduler.scheduler.running else "stopped"
+        
+        # 获取APScheduler中的任务
+        try:
+            result["scheduler_jobs"] = [
+                {
+                    "id": str(job.id),
+                    "name": job.name,
+                    "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                    "trigger": str(job.trigger),
+                    "func": str(job.func)
+                }
+                for job in scheduler.scheduler.get_jobs()
+            ]
+        except Exception as e:
+            result["errors"].append(f"获取调度任务失败: {str(e)}")
+        
+        # 尝试从D1数据库获取定时任务
+        try:
+            tasks = scheduler.d1.fetch_all("SELECT * FROM scheduled_tasks ORDER BY created_at DESC")
+            result["scheduled_tasks"] = tasks
+        except Exception as e:
+            result["errors"].append(f"D1数据库scheduled_tasks查询失败: {str(e)}")
+        
+        # 尝试从D1数据库获取AI生成的headlines
+        try:
+            headlines = scheduler.d1.fetch_all("SELECT * FROM ai_headlines ORDER BY created_at DESC LIMIT 10")
+            result["recent_headlines"] = headlines
+        except Exception as e:
+            result["errors"].append(f"D1数据库ai_headlines查询失败: {str(e)}")
+        
+        return result
+        
+    except Exception as e:
+        result["errors"].append(f"调度器状态检查失败: {str(e)}")
+        return result
 
 
 @app.get("/auth/info")
@@ -443,5 +603,6 @@ async def get_task_status(task_id: str, token_valid: bool = Depends(verify_any_t
         raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=24314)
+    # 使用startup.py启动
+    from startup import start_server
+    start_server()
