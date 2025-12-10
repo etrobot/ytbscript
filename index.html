@@ -18,7 +18,7 @@
             const cookieString = document.getElementById('cookieString').value;
             
             try {
-                const response = await fetch('/cookie/save', {
+                const response = await fetch('/api/save_cookie', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
