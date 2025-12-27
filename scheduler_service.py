@@ -18,7 +18,12 @@ class TaskScheduler:
     def __init__(self):
         self.d1 = D1Client()
         self.processor = get_processor()
-        self.openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"),base_url=os.getenv("OPENAI_BASE_URL"))
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key:
+            self.openai = AsyncOpenAI(api_key=api_key, base_url=os.getenv("OPENAI_BASE_URL"))
+        else:
+            self.openai = None
+            logger.warning("OPENAI_API_KEY not found, AI summary features will be disabled.")
         self.scheduler = AsyncIOScheduler()
 
     async def init_db(self):
@@ -112,6 +117,9 @@ class TaskScheduler:
     async def generate_headline(self, content: str, prompt: str):
         if not content:
             return "No content available for summary.", "No content"
+            
+        if not self.openai:
+            return "AI Config Error", "OpenAI API Key not configured. summary generation skipped."
 
         full_prompt = f"{prompt}\n\nBased on the following video transcripts, please generate a headline and a summary article:\n\n{content}"
         
@@ -235,6 +243,15 @@ class TaskScheduler:
             asyncio.get_event_loop().run_forever()
         except (KeyboardInterrupt, SystemExit):
             pass
+
+_scheduler_instance = None
+
+def get_scheduler():
+    global _scheduler_instance
+    if _scheduler_instance is None:
+        _scheduler_instance = TaskScheduler()
+    return _scheduler_instance
+
 
 if __name__ == "__main__":
     # Ensure environment variables are loaded
