@@ -314,6 +314,15 @@ class TaskManager:
         if len(self.running_tasks) >= 1:  # 限制同时只能运行1个任务
             raise ValueError("已有任务在运行中，请等待当前任务完成后再启动新任务")
         
+        # 暂停Cookie保活服务
+        try:
+            from cookie_keepalive_service import get_keepalive_service
+            keepalive = get_keepalive_service()
+            keepalive.pause()
+            logger.info("Cookie保活已暂停，任务开始执行")
+        except Exception as e:
+            logger.warning(f"暂停Cookie保活失败: {e}")
+        
         # 创建异步任务
         if task_info['task_type'] == TaskType.BATCH_PROCESS.value:
             # 使用线程池执行阻塞操作
@@ -422,6 +431,15 @@ class TaskManager:
             # 从运行任务中移除
             if task_id in self.running_tasks:
                 del self.running_tasks[task_id]
+            
+            # 恢复Cookie保活服务
+            try:
+                from cookie_keepalive_service import get_keepalive_service
+                keepalive = get_keepalive_service()
+                keepalive.resume()
+                logger.info("任务完成，Cookie保活已恢复")
+            except Exception as e:
+                logger.warning(f"恢复Cookie保活失败: {e}")
     
     def _normalize_channel_url(self, channel_url: str) -> str:
         """标准化频道URL，用于重复检测"""
@@ -518,6 +536,10 @@ class TaskManager:
                     continue
         
         return None
+    
+    def has_running_tasks(self) -> bool:
+        """检查是否有正在运行的任务"""
+        return len(self.running_tasks) > 0
     
     def get_channel_task_history(self, channel_url: str, limit: int = 10) -> List[Dict]:
         """获取指定频道的任务历史"""

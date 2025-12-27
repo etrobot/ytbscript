@@ -6,7 +6,7 @@
 
 - **智能缓存**: 自动管理数据库缓存，性能提升10倍以上
 - **批量处理**: 支持频道级别的异步批量处理
-- **Cookie管理**: 支持Cookie保存和自动使用
+- **Cookie保活**: 自动保活防止Cookie过期，任务优先智能暂停/恢复（每5分钟）
 
 ---
 
@@ -24,7 +24,7 @@
 
 ### 1️⃣ POST `/api/save_cookie`
 
-保存/更新Cookie
+保存Cookie并自动启动保活服务
 
 **请求**:
 ```bash
@@ -32,8 +32,8 @@ curl -X POST "http://localhost:24314/api/save_cookie" \
   -H "X-API-Token: Abcd123456" \
   -H "Content-Type: application/json" \
   -d '{
-    "cookie_name": "youtube_cookies",
-    "cookie_content": "Cookie内容"
+    "cookie_name": "cookies.txt",
+    "cookie_content": "你的Cookie内容（任何格式，自动转换）"
   }'
 ```
 
@@ -41,10 +41,13 @@ curl -X POST "http://localhost:24314/api/save_cookie" \
 ```json
 {
   "status": "success",
-  "message": "Cookie已保存: youtube_cookies.txt",
-  "path": "/path/to/cookies/youtube_cookies.txt"
+  "message": "Cookie已保存并启动保活: cookies.txt",
+  "path": "/path/to/cookies/cookies.txt",
+  "keepalive_enabled": true
 }
 ```
+
+> 💡 **保活机制**: 保存Cookie后会自动启动保活服务（每5分钟访问YouTube），有任务运行时自动暂停，任务完成后自动恢复
 
 ---
 
@@ -365,19 +368,20 @@ def update_channel_continuously(channel_url):
 
 ## 🎉 总结
 
-**3个核心API，清晰简洁：**
+**核心功能：**
 
-1. `/api/save_cookie` - 保存Cookie
-2. `/api/subtitle` - 智能获取字幕
-3. `/api/channel_task` - 频道任务
+1. **Cookie保活** - 自动保活，任务优先（每5分钟）
+2. **智能字幕** - 数据库缓存，按需下载
+3. **批量处理** - 频道级异步任务
 
-**设计原则：**
-- ✅ RESTful风格
-- ✅ 命名清晰
-- ✅ 功能明确
-- ✅ 易于使用
+**主要API：**
+- `/api/save_cookie` - 保存Cookie并启动保活
+- `/api/subtitle` - 智能获取字幕
+- `/api/channel_task` - 频道批量任务
+- `/api/cookie/keepalive/status` - 查看保活状态
 
-**代码质量：**
-- 总行数: 455行
-- 核心API: 3个
-- 代码精简、易维护
+**特点：**
+- ✅ 全自动Cookie保活
+- ✅ 任务优先智能调度
+- ✅ 数据库智能缓存
+- ✅ RESTful API设计

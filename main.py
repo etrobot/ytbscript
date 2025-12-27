@@ -241,10 +241,31 @@ async def get_services_status():
         # 获取任务管理器统计
         try:
             task_manager = get_task_manager()
-            task_stats = task_manager.get_statistics()
-            services_status["services"]["task_manager"]["statistics"] = task_stats
+            # 检查是否有运行中的任务
+            has_tasks = task_manager.has_running_tasks()
+            services_status["services"]["task_manager"]["has_running_tasks"] = has_tasks
         except Exception as e:
             services_status["services"]["task_manager"]["error"] = str(e)
+        
+        # 获取Cookie保活服务状态
+        try:
+            from cookie_keepalive_service import get_keepalive_service
+            keepalive = get_keepalive_service(COOKIE_DIR)
+            keepalive_status = keepalive.get_status()
+            services_status["services"]["cookie_keepalive"] = {
+                "status": "running" if keepalive_status['running'] else "stopped",
+                "description": "Cookie保活服务",
+                "paused": keepalive_status['paused'],
+                "check_interval": keepalive_status['check_interval'],
+                "active_cookie": keepalive_status['active_cookie'],
+                "cookies": keepalive_status['cookies']
+            }
+        except Exception as e:
+            services_status["services"]["cookie_keepalive"] = {
+                "status": "not_initialized",
+                "description": "Cookie保活服务",
+                "error": str(e)
+            }
             
         # 检查本地数据库
         try:
@@ -362,7 +383,7 @@ async def auth_info(token_valid: bool = Depends(verify_any_token)):
 @app.post("/api/save_cookie")
 async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(verify_any_token)):
     """
-    保存/更新 Cookie
+    保存/更新 Cookie（保存后自动启动保活服务）
     
     请求体:
     {
@@ -379,11 +400,32 @@ async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(ve
         with open(cookie_path, 'w', encoding='utf-8') as f:
             f.write(netscape_content)
         
-        return {
-            "status": "success",
-            "message": f"Cookie已保存: {filename}",
-            "path": str(cookie_path)
-        }
+        # 注册cookie到保活服务
+        try:
+            from cookie_keepalive_service import get_keepalive_service
+            keepalive = get_keepalive_service(COOKIE_DIR)
+            keepalive.register_cookie(filename, cookie_path)
+            
+            # 如果保活服务未运行，启动它
+            if not keepalive.running:
+                keepalive.start()
+                logger.info("Cookie保活服务已启动")
+            
+            return {
+                "status": "success",
+                "message": f"Cookie已保存并启动保活: {filename}",
+                "path": str(cookie_path),
+                "keepalive_enabled": True
+            }
+        except Exception as e:
+            logger.warning(f"启动保活服务失败: {e}")
+            return {
+                "status": "success",
+                "message": f"Cookie已保存: {filename}（保活服务启动失败）",
+                "path": str(cookie_path),
+                "keepalive_enabled": False,
+                "keepalive_error": str(e)
+            }
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存Cookie失败: {str(e)}")
@@ -601,6 +643,63 @@ async def get_task_status(task_id: str, token_valid: bool = Depends(verify_any_t
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
+
+
+@app.get("/api/cookie/keepalive/status")
+async def get_keepalive_status(token_valid: bool = Depends(verify_any_token)):
+    """
+    获取Cookie保活服务状态
+    
+    返回保活服务的详细状态信息
+    """
+    try:
+        from cookie_keepalive_service import get_keepalive_service
+        keepalive = get_keepalive_service(COOKIE_DIR)
+        status = keepalive.get_status()
+        
+        return {
+            "status": "success",
+            "keepalive_service": status
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取保活状态失败: {str(e)}")
+
+
+@app.post("/api/cookie/keepalive/control")
+async def control_keepalive(action: str, token_valid: bool = Depends(verify_any_token)):
+    """
+    控制Cookie保活服务
+    
+    参数:
+        action: 'start', 'pause', 'resume', 'stop'
+    """
+    try:
+        from cookie_keepalive_service import get_keepalive_service
+        keepalive = get_keepalive_service(COOKIE_DIR)
+        
+        if action == 'start':
+            if keepalive.running:
+                return {"status": "info", "message": "保活服务已在运行"}
+            keepalive.start()
+            return {"status": "success", "message": "保活服务已启动"}
+        
+        elif action == 'pause':
+            keepalive.pause()
+            return {"status": "success", "message": "保活服务已暂停"}
+        
+        elif action == 'resume':
+            keepalive.resume()
+            return {"status": "success", "message": "保活服务已恢复"}
+        
+        elif action == 'stop':
+            await keepalive.stop()
+            return {"status": "success", "message": "保活服务已停止"}
+        
+        else:
+            raise HTTPException(status_code=400, detail=f"无效的操作: {action}")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"控制保活服务失败: {str(e)}")
 
 if __name__ == "__main__":
     # 使用startup.py启动
