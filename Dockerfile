@@ -20,6 +20,7 @@ COPY youtube_channel_processor.py .
 COPY scheduler_service.py .
 COPY d1_client.py .
 COPY cookie_utils.py .
+COPY cookie_keepalive_service.py .
 COPY index.html .
 COPY .env* .
 

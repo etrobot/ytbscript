@@ -29,6 +29,11 @@ TOKEN_PREFIX = os.getenv("TOKEN_PREFIX", "")
 
 # 导入启动模块
 from startup import create_app_lifespan, get_app_config
+from task_manager import get_task_manager, TaskType, TaskStatus
+from youtube_channel_processor import YouTubeChannelProcessor
+from scheduler_service import get_scheduler
+from cookie_utils import cookie_string_to_netscape
+from cookie_keepalive_service import get_keepalive_service
 
 # 获取应用配置
 app_config = get_app_config()
@@ -249,7 +254,6 @@ async def get_services_status():
         
         # 获取Cookie保活服务状态
         try:
-            from cookie_keepalive_service import get_keepalive_service
             keepalive = get_keepalive_service(COOKIE_DIR)
             keepalive_status = keepalive.get_status()
             services_status["services"]["cookie_keepalive"] = {
@@ -341,14 +345,14 @@ async def get_scheduled_tasks():
         
         # 尝试从D1数据库获取定时任务
         try:
-            tasks = scheduler.d1.fetch_all("SELECT * FROM scheduled_tasks ORDER BY created_at DESC")
+            tasks = scheduler.d1.fetch_all("SELECT * FROM scheduled_tasks ORDER BY createdAt DESC")
             result["scheduled_tasks"] = tasks
         except Exception as e:
             result["errors"].append(f"D1数据库scheduled_tasks查询失败: {str(e)}")
         
         # 尝试从D1数据库获取AI生成的headlines
         try:
-            headlines = scheduler.d1.fetch_all("SELECT * FROM ai_headlines ORDER BY created_at DESC LIMIT 10")
+            headlines = scheduler.d1.fetch_all("SELECT * FROM ai_headlines ORDER BY createdAt DESC LIMIT 10")
             result["recent_headlines"] = headlines
         except Exception as e:
             result["errors"].append(f"D1数据库ai_headlines查询失败: {str(e)}")
@@ -402,7 +406,6 @@ async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(ve
         
         # 注册cookie到保活服务
         try:
-            from cookie_keepalive_service import get_keepalive_service
             keepalive = get_keepalive_service(COOKIE_DIR)
             keepalive.register_cookie(filename, cookie_path)
             

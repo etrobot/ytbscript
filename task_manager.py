@@ -13,6 +13,7 @@ from pathlib import Path
 import logging
 import concurrent.futures
 import threading
+from cookie_keepalive_service import get_keepalive_service
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +317,6 @@ class TaskManager:
         
         # 暂停Cookie保活服务
         try:
-            from cookie_keepalive_service import get_keepalive_service
             keepalive = get_keepalive_service()
             keepalive.pause()
             logger.info("Cookie保活已暂停，任务开始执行")
@@ -434,7 +434,6 @@ class TaskManager:
             
             # 恢复Cookie保活服务
             try:
-                from cookie_keepalive_service import get_keepalive_service
                 keepalive = get_keepalive_service()
                 keepalive.resume()
                 logger.info("任务完成，Cookie保活已恢复")

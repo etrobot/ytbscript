@@ -28,30 +28,30 @@ class TaskScheduler:
             self.d1.execute("""
                 CREATE TABLE IF NOT EXISTS ai_headlines (
                     id text PRIMARY KEY NOT NULL,
-                    user_id text NOT NULL,
+                    userId text NOT NULL,
                     title text NOT NULL,
                     content text NOT NULL,
-                    article_count integer DEFAULT 0 NOT NULL,
+                    articleCount integer DEFAULT 0 NOT NULL,
                     prompt text,
-                    feed_ids text,
-                    custom_source_ids text,
+                    feedIds text,
+                    customSourceIds text,
                     slides text,
-                    created_at integer
+                    createdAt integer
                 );
             """)
             self.d1.execute("""
                 CREATE TABLE IF NOT EXISTS scheduled_tasks (
                     id text PRIMARY KEY NOT NULL,
-                    user_id text NOT NULL,
-                    task_type text NOT NULL,
-                    scheduled_hour integer NOT NULL,
-                    feed_ids text,
-                    custom_source_ids text,
+                    userId text NOT NULL,
+                    taskType text NOT NULL,
+                    scheduledHour integer NOT NULL,
+                    feedIds text,
+                    customSourceIds text,
                     prompt text,
-                    is_active integer DEFAULT true NOT NULL,
-                    last_executed_at integer,
-                    created_at integer,
-                    updated_at integer
+                    isActive integer DEFAULT true NOT NULL,
+                    lastExecutedAt integer,
+                    createdAt integer,
+                    updatedAt integer
                 );
             """)
             logger.info("D1 tables check completed.")
@@ -140,11 +140,11 @@ class TaskScheduler:
     async def run_task(self, task):
         logger.info(f"Running task {task['id']}...")
         
-        feed_ids = task.get('feed_ids', '').split(',') if task.get('feed_ids') else []
+        feed_ids = task.get('feedIds', '').split(',') if task.get('feedIds') else []
         prompt = task.get('prompt', 'Summarize the latest news.')
         
         if not feed_ids:
-            logger.warning(f"No feed_ids for task {task['id']}")
+            logger.warning(f"No feedIds for task {task['id']}")
             return
 
         # 1. Gather content
@@ -163,23 +163,23 @@ class TaskScheduler:
         
         try:
             self.d1.execute("""
-                INSERT INTO ai_headlines (id, user_id, title, content, article_count, prompt, feed_ids, created_at)
+                INSERT INTO ai_headlines (id, userId, title, content, articleCount, prompt, feedIds, createdAt)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 headline_id,
-                task['user_id'],
+                task['userId'],
                 title,
                 content,
                 1, # simple count
                 prompt,
-                task['feed_ids'],
+                task['feedIds'],
                 created_at
             ])
             logger.info(f"Created headline {headline_id}")
             
-            # 4. Update task last_executed_at
+            # 4. Update task lastExecutedAt
             self.d1.execute("""
-                UPDATE scheduled_tasks SET last_executed_at = ? WHERE id = ?
+                UPDATE scheduled_tasks SET lastExecutedAt = ? WHERE id = ?
             """, [created_at, task['id']])
             
         except Exception as e:
@@ -199,11 +199,11 @@ class TaskScheduler:
             # to prevent double execution if the job runs multiple times in the hour.
             # But since we run every hour, we can just check if last_executed_at is not in the current hour window.
             
-            tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE is_active = 1")
+            tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE isActive = 1")
             
             for task in tasks:
-                scheduled_hour = task['scheduled_hour']
-                last_exec = task.get('last_executed_at')
+                scheduled_hour = task['scheduledHour']
+                last_exec = task.get('lastExecutedAt')
                 
                 # Check if it's time to run
                 # Simple logic: if scheduled_hour matches current hour
