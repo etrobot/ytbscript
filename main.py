@@ -34,6 +34,7 @@ from youtube_channel_processor import YouTubeChannelProcessor
 from scheduler_service import get_scheduler
 from cookie_utils import cookie_string_to_netscape
 from cookie_keepalive_service import get_keepalive_service
+from cookie_keepalive_api import router as cookie_keepalive_router
 
 # 获取应用配置
 app_config = get_app_config()
@@ -44,6 +45,8 @@ app = FastAPI(
     version=app_config["version"],
     lifespan=create_app_lifespan()
 )
+
+app.include_router(cookie_keepalive_router)
 
 # 使用项目本地目录
 BASE_DIR = Path(__file__).parent.absolute()
@@ -646,63 +649,6 @@ async def get_task_status(task_id: str, token_valid: bool = Depends(verify_any_t
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
-
-
-@app.get("/api/cookie/keepalive/status")
-async def get_keepalive_status(token_valid: bool = Depends(verify_any_token)):
-    """
-    获取Cookie保活服务状态
-    
-    返回保活服务的详细状态信息
-    """
-    try:
-        from cookie_keepalive_service import get_keepalive_service
-        keepalive = get_keepalive_service(COOKIE_DIR)
-        status = keepalive.get_status()
-        
-        return {
-            "status": "success",
-            "keepalive_service": status
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取保活状态失败: {str(e)}")
-
-
-@app.post("/api/cookie/keepalive/control")
-async def control_keepalive(action: str, token_valid: bool = Depends(verify_any_token)):
-    """
-    控制Cookie保活服务
-    
-    参数:
-        action: 'start', 'pause', 'resume', 'stop'
-    """
-    try:
-        from cookie_keepalive_service import get_keepalive_service
-        keepalive = get_keepalive_service(COOKIE_DIR)
-        
-        if action == 'start':
-            if keepalive.running:
-                return {"status": "info", "message": "保活服务已在运行"}
-            keepalive.start()
-            return {"status": "success", "message": "保活服务已启动"}
-        
-        elif action == 'pause':
-            keepalive.pause()
-            return {"status": "success", "message": "保活服务已暂停"}
-        
-        elif action == 'resume':
-            keepalive.resume()
-            return {"status": "success", "message": "保活服务已恢复"}
-        
-        elif action == 'stop':
-            await keepalive.stop()
-            return {"status": "success", "message": "保活服务已停止"}
-        
-        else:
-            raise HTTPException(status_code=400, detail=f"无效的操作: {action}")
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"控制保活服务失败: {str(e)}")
 
 if __name__ == "__main__":
     # 使用startup.py启动

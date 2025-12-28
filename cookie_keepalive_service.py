@@ -42,7 +42,7 @@ class CookieKeepAliveService:
         # 保活用的测试URL（轻量级）
         self.keepalive_urls = [
             "https://www.youtube.com/",  # 主页
-            "https://www.youtube.com/feed/trending",  # 趋势页
+            "https://www.youtube.com/feed/subscriptions",  # 订阅页
         ]
         
         self._load_metadata()
@@ -185,7 +185,14 @@ class CookieKeepAliveService:
             url = self.keepalive_urls[int(time.time()) % len(self.keepalive_urls)]
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                try:
+                    info = ydl.extract_info(url, download=False)
+                except Exception as e:
+                    error_msg = str(e)
+                    if "[youtube:tab] trending" in error_msg and "redirected" in error_msg.lower():
+                        info = ydl.extract_info("https://www.youtube.com/", download=False)
+                    else:
+                        raise
                 
                 if info:
                     logger.info(f"Cookie保活成功: {cookie_path.name}")
