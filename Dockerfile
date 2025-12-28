@@ -21,6 +21,7 @@ COPY scheduler_service.py .
 COPY d1_client.py .
 COPY cookie_utils.py .
 COPY cookie_keepalive_service.py .
+COPY cookie_keepalive_api.py .
 COPY index.html .
 COPY .env* .
 
