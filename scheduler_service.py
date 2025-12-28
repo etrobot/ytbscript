@@ -50,6 +50,7 @@ class TaskScheduler:
                     userId text NOT NULL,
                     taskType text NOT NULL,
                     scheduledHour integer NOT NULL,
+                    scheduledMinute integer DEFAULT 0 NOT NULL,
                     feedIds text,
                     customSourceIds text,
                     prompt text,
@@ -145,7 +146,7 @@ class TaskScheduler:
             logger.error(f"OpenAI API error: {e}")
             return "Error generating headline", str(e)
 
-    async def run_task(self, task):
+    async def run_task(self, task, original_scheduled_time=None):
         logger.info(f"Running task {task['id']}...")
         
         feed_ids = task.get('feedIds', '').split(',') if task.get('feedIds') else []
@@ -165,9 +166,22 @@ class TaskScheduler:
         # 2. Generate summary
         title, content = await self.generate_headline(content_text, prompt)
         
-        # 3. Save to ai_headlines
+        # 3. Calculate the timestamp to use
+        # If original_scheduled_time is provided, use the scheduled time (not actual execution time)
+        if original_scheduled_time:
+            scheduled_hour, scheduled_minute = original_scheduled_time
+            # Create a datetime for today at the scheduled time in UTC
+            now_utc = datetime.now(timezone.utc)
+            scheduled_datetime = now_utc.replace(hour=scheduled_hour, minute=scheduled_minute, second=0, microsecond=0)
+            # Convert to timestamp in milliseconds
+            created_at = int(scheduled_datetime.timestamp() * 1000)
+            logger.info(f"Using scheduled time for timestamp: {scheduled_datetime.strftime('%Y-%m-%d %H:%M:%S UTC')} ({created_at}ms)")
+        else:
+            # Fall back to current time
+            created_at = int(time.time() * 1000)
+        
+        # 4. Save to ai_headlines
         headline_id = str(uuid.uuid4())
-        created_at = int(time.time())
         
         try:
             self.d1.execute("""
@@ -183,48 +197,53 @@ class TaskScheduler:
                 task['feedIds'],
                 created_at
             ])
-            logger.info(f"Created headline {headline_id}")
+            logger.info(f"Created headline {headline_id} with timestamp {created_at}")
             
-            # 4. Update task lastExecutedAt
+            # 5. Update task lastExecutedAt (using actual execution time)
+            actual_execution_time = int(time.time() * 1000)
             self.d1.execute("""
                 UPDATE scheduled_tasks SET lastExecutedAt = ? WHERE id = ?
-            """, [created_at, task['id']])
+            """, [actual_execution_time, task['id']])
             
         except Exception as e:
             logger.error(f"Failed to save headline or update task: {e}")
 
     async def check_schedule(self):
         logger.info("Checking schedule...")
-        current_hour = datetime.now(timezone.utc).hour # Use UTC to be consistent
-        # Or use local time if that's what the user expects. 
-        # User metadata says "local time is ... +08:00".
-        # Let's use local time of the machine running the script.
-        current_hour_local = datetime.now().hour
+        # Use UTC time to match the UTC timestamps stored in D1
+        now_utc = datetime.now(timezone.utc)
+        current_hour_utc = now_utc.hour
+        current_minute_utc = now_utc.minute
+        
+        # Execute tasks 1 hour early to avoid congestion
+        # So if scheduled for 10:30 UTC, execute at 9:30 UTC
+        scheduled_hour_target = (current_hour_utc + 1) % 24
+        scheduled_minute_target = current_minute_utc
         
         try:
-            # Fetch active tasks scheduled for this hour
-            # We also check if it was already executed recently (e.g. within the last 50 mins)
-            # to prevent double execution if the job runs multiple times in the hour.
-            # But since we run every hour, we can just check if last_executed_at is not in the current hour window.
-            
             tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE isActive = 1")
             
             for task in tasks:
                 scheduled_hour = task['scheduledHour']
+                scheduled_minute = task.get('scheduledMinute', 0)  # Default to 0 if not set
                 last_exec = task.get('lastExecutedAt')
                 
-                # Check if it's time to run
-                # Simple logic: if scheduled_hour matches current hour
-                if scheduled_hour == current_hour_local:
-                    # Check if already run today
+                # Check if it's time to run (1 hour before scheduled time)
+                # Example: If scheduled for 10:30 UTC, run at 9:30 UTC
+                if scheduled_hour == scheduled_hour_target and scheduled_minute == scheduled_minute_target:
+                    # Check if already run in the last minute to avoid duplicate executions
                     should_run = True
                     if last_exec:
-                        last_exec_dt = datetime.fromtimestamp(last_exec)
-                        if last_exec_dt.date() == datetime.now().date() and last_exec_dt.hour == current_hour_local:
+                        last_exec_dt = datetime.fromtimestamp(last_exec / 1000)  # Convert ms to seconds
+                        time_since_last_run = (now_utc.replace(tzinfo=None) - last_exec_dt).total_seconds()
+                        # Don't run again if executed within the last 60 seconds
+                        if time_since_last_run < 60:
                             should_run = False
                     
                     if should_run:
-                        await self.run_task(task)
+                        logger.info(f"Executing task {task['id']} (scheduled for {scheduled_hour:02d}:{scheduled_minute:02d} UTC, running at {current_hour_utc:02d}:{current_minute_utc:02d} UTC)")
+                        # Pass the original scheduled time for timestamp generation
+                        await self.run_task(task, original_scheduled_time=(scheduled_hour, scheduled_minute))
                         
         except Exception as e:
             logger.error(f"Error checking schedule: {e}")
@@ -233,10 +252,10 @@ class TaskScheduler:
         # Run init_db once
         asyncio.get_event_loop().run_until_complete(self.init_db())
         
-        # Add job
-        self.scheduler.add_job(self.check_schedule, 'interval', hours=1, next_run_time=datetime.now())
+        # Add job - check every minute for minute-level precision
+        self.scheduler.add_job(self.check_schedule, 'interval', minutes=1, next_run_time=datetime.now())
         
-        logger.info("Scheduler started. Press Ctrl+C to exit.")
+        logger.info("Scheduler started (checking every minute). Press Ctrl+C to exit.")
         self.scheduler.start()
         
         try:

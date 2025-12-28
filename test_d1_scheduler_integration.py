@@ -54,12 +54,15 @@ async def test_d1_scheduler_integration():
         print("步骤1: 在D1中创建定时任务")
         print("=" * 80)
         
-        current_hour = datetime.now().hour
+        now = datetime.now()
+        current_hour = now.hour
+        current_minute = now.minute
         task_data = {
             'id': test_task_id,
             'user_id': test_user_id,
             'task_type': 'daily_summary',
             'scheduled_hour': current_hour,  # 设置为当前小时，方便测试
+            'scheduled_minute': current_minute,  # 设置为当前分钟，方便测试
             'feed_ids': test_channel_id,
             'custom_source_ids': None,
             'prompt': '请总结这些视频的主要内容，生成一个新闻标题和摘要。',
@@ -71,14 +74,15 @@ async def test_d1_scheduler_integration():
         
         d1.execute("""
             INSERT INTO scheduled_tasks 
-            (id, user_id, task_type, scheduled_hour, feed_ids, custom_source_ids, 
+            (id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, custom_source_ids, 
              prompt, is_active, last_executed_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             task_data['id'],
             task_data['user_id'],
             task_data['task_type'],
             task_data['scheduled_hour'],
+            task_data['scheduled_minute'],
             task_data['feed_ids'],
             task_data['custom_source_ids'],
             task_data['prompt'],
@@ -89,7 +93,7 @@ async def test_d1_scheduler_integration():
         ])
         
         print(f"✅ 成功创建定时任务: {test_task_id}")
-        print(f"   调度时间: 每天 {current_hour}:00")
+        print(f"   调度时间: 每天 {current_hour:02d}:{current_minute:02d}")
         
         # ========== 步骤2: 从D1读取定时任务 ==========
         print("\n" + "=" * 80)

@@ -82,7 +82,8 @@ async def test_flow():
         'user_id': 'USER_TEST',
         'feed_ids': 'UC_TEST',
         'prompt': 'Summarize this.',
-        'scheduled_hour': 10
+        'scheduledHour': 10,
+        'scheduledMinute': 0
     }
     
     print(f"Running task: {task['id']}")
