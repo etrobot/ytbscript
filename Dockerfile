@@ -9,27 +9,18 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制项目文件
-COPY pyproject.toml .
-COPY uv.lock .
-COPY main.py .
-COPY startup.py .
-COPY subtitle_utils.py .
-COPY task_manager.py .
-COPY youtube_channel_processor.py .
-COPY scheduler_service.py .
-COPY d1_client.py .
-COPY cookie_utils.py .
-COPY cookie_keepalive_service.py .
-COPY cookie_keepalive_api.py .
-COPY index.html .
-COPY .env* .
-
 # 安装uv包管理器
 RUN pip install uv
 
-# 安装Python依赖
-RUN uv sync --frozen
+# 1. 优先复制依赖配置文件
+COPY pyproject.toml uv.lock README.md ./
+
+# 2. 安装Python依赖 (利用缓存)
+# 使用 --no-install-project 避免在缺少源码时报错
+RUN uv sync --frozen --no-install-project
+
+# 3. 批量复制所有 Python 文件及相关资源
+COPY *.py index.html .env* ./
 
 # 创建必要的目录
 RUN mkdir -p /app/downloads /app/cookies
