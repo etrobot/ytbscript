@@ -171,17 +171,39 @@ class CookieKeepAliveService:
             True if successful, False otherwise
         """
         try:
-            # 使用轻量级请求保活
+            # 尝试通过更新频道来进行保活
+            try:
+                from youtube_channel_processor import get_processor
+                processor = get_processor()
+                channel = processor.get_oldest_channel()
+                
+                if channel:
+                    channel_url = channel['channel_url']
+                    channel_name = channel['channel_name']
+                    logger.info(f"🔄 使用频道进行保活: {channel_name} ({channel_url})")
+                    
+                    # 使用频道更新作为保活手段
+                    # 限制每次保活只检查5个视频，避免耗时太长
+                    await processor.process_channel_batch(
+                        channel_url=channel_url,
+                        max_videos=5,
+                        cookie_file=cookie_path
+                    )
+                    logger.info(f"✅ 频道保活成功: {channel_name}")
+                    return True
+            except Exception as ce:
+                logger.warning(f"通过频道保活失败，尝试通用保活: {str(ce)}")
+
+            # 如果没有频道或频道更新失败，执行通用保活
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'extract_flat': True,  # 只获取基本信息，不深入提取
+                'extract_flat': True,
                 'cookiefile': str(cookie_path),
                 'socket_timeout': 30,
-                'playlist_items': '1',  # 只处理第一个项目
+                'playlist_items': '1',
             }
             
-            # 轮流使用不同URL避免被检测
             url = self.keepalive_urls[int(time.time()) % len(self.keepalive_urls)]
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -195,14 +217,14 @@ class CookieKeepAliveService:
                         raise
                 
                 if info:
-                    logger.info(f"Cookie保活成功: {cookie_path.name}")
+                    logger.info(f"Cookie通用保活成功: {cookie_path.name}")
                     return True
                 else:
-                    logger.warning(f"Cookie保活失败: 无法访问YouTube")
+                    logger.warning(f"Cookie通用保活失败: 无法访问YouTube")
                     return False
                     
         except Exception as e:
-            logger.error(f"保活操作失败: {str(e)}")
+            logger.error(f"保活操作最终失败: {str(e)}")
             return False
     
     def pause(self):

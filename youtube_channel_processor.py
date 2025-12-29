@@ -65,7 +65,32 @@ class YouTubeChannelProcessor:
                     subtitle_extracted BOOLEAN DEFAULT FALSE,
                     subtitle_language TEXT,
                     subtitle_json TEXT,
+                    view_count INTEGER,
                     FOREIGN KEY (channel_id) REFERENCES channels (channel_id)
+                )
+            ''')
+
+            # 创建 RSS Feed 表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rss_feeds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    last_fetched TIMESTAMP
+                )
+            ''')
+            
+            # 创建 RSS 文章表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rss_articles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    feed_url TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    url TEXT UNIQUE NOT NULL,
+                    summary TEXT,
+                    content TEXT,
+                    published_at TIMESTAMP,
+                    FOREIGN KEY (feed_url) REFERENCES rss_feeds (url)
                 )
             ''')
             
@@ -73,45 +98,64 @@ class YouTubeChannelProcessor:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_videos_channel_id ON videos (channel_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_videos_upload_date ON videos (upload_date)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_videos_subtitle_extracted ON videos (subtitle_extracted)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_rss_articles_feed_url ON rss_articles (feed_url)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_rss_articles_published_at ON rss_articles (published_at)')
             
+            # 尝试添加 view_count 列（如果表已存在但由于旧版本缺失该列）
+            try:
+                cursor.execute('ALTER TABLE videos ADD COLUMN view_count INTEGER')
+            except sqlite3.OperationalError:
+                # 列可能已经存在，忽略错误
+                pass
+
             conn.commit()
-            logger.info("数据库初始化完成")
+            logger.info("数据库初始化完成（包含 RSS 表和 view_count 字段）")
     
-    def get_channel_videos(self, channel_url: str, max_videos: int = 50, cookie_string: Optional[str] = None) -> List[Dict]:
+    def get_channel_videos(self, channel_url: str, max_videos: int = 50, 
+                           cookie_string: Optional[str] = None,
+                           cookie_file: Optional[Path] = None) -> Tuple[Dict, List[Dict]]:
         """
         获取频道最新视频列表
         
         Args:
             channel_url: YouTube频道URL
             max_videos: 最大视频数量
-            cookie_string: 可选的cookie字符串，自动转换为Netscape格式
+            cookie_string: 可选的cookie字符串
+            cookie_file: 可选的cookie文件路径
             
         Returns:
-            视频信息列表
+            (channel_info, videos_list)
         """
         # 配置yt-dlp选项
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            # 不使用 extract_flat，获取完整的视频信息
-            'playlistend': max_videos,  # 限制视频数量
+            'playlistend': max_videos,
+            'extractor_args': {
+                'youtubetab': {
+                    'skip': ['authcheck']
+                }
+            },
         }
         
         # 处理Cookie
         temp_cookie_file = None
-        if cookie_string:
+        if cookie_file:
+            ydl_opts['cookiefile'] = str(cookie_file)
+            logger.info(f"使用指定的Cookie文件: {cookie_file.name}")
+        elif cookie_string:
             # 使用传入的cookie字符串，转换为Netscape格式
             temp_cookie_file = save_cookie_string_as_netscape(cookie_string)
             ydl_opts['cookiefile'] = str(temp_cookie_file)
             logger.info("使用传入的Cookie字符串（已转换为Netscape格式）")
         else:
-            # 使用固定的cookie文件
-            cookie_path = COOKIE_DIR / "cookies.txt"
-            if cookie_path.exists():
-                ydl_opts['cookiefile'] = str(cookie_path)
-                logger.info("使用Cookie文件: cookies.txt")
+            # 使用默认的cookie文件
+            default_cookie = COOKIE_DIR / "cookies.txt"
+            if default_cookie.exists():
+                ydl_opts['cookiefile'] = str(default_cookie)
+                logger.info("使用默认Cookie文件: cookies.txt")
             else:
-                logger.warning("未找到 cookies.txt，可能会遇到访问限制")
+                logger.warning("未找到默认 cookies.txt，可能会遇到访问限制")
         
         def _flatten_entries(entries):
             """展开嵌套的 playlist，确保获取真实视频条目"""
@@ -170,7 +214,8 @@ class YouTubeChannelProcessor:
                             'url': video_url,
                             'duration': entry.get('duration'),
                             'upload_date': entry.get('upload_date'),
-                            'uploader': entry.get('uploader') or channel_info['channel_name']
+                            'uploader': entry.get('uploader') or channel_info['channel_name'],
+                            'view_count': entry.get('view_count')
                         }
                         videos.append(video_info)
                 
@@ -207,12 +252,19 @@ class YouTubeChannelProcessor:
                 datetime.now()
             ))
             
-            # 保存视频信息
+            # 保存视频信息 (使用 UPSERT 逻辑更新元数据)
             for video in videos:
                 cursor.execute('''
-                    INSERT OR IGNORE INTO videos 
-                    (video_id, channel_id, title, url, duration, upload_date, uploader, subtitle_extracted, subtitle_language, subtitle_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO videos 
+                    (video_id, channel_id, title, url, duration, upload_date, uploader, subtitle_extracted, subtitle_language, subtitle_json, view_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(video_id) DO UPDATE SET
+                        title = excluded.title,
+                        url = excluded.url,
+                        duration = excluded.duration,
+                        upload_date = excluded.upload_date,
+                        uploader = excluded.uploader,
+                        view_count = excluded.view_count
                 ''', (
                     video['video_id'],
                     channel_info['channel_id'],
@@ -221,16 +273,19 @@ class YouTubeChannelProcessor:
                     video['duration'],
                     video['upload_date'],
                     video['uploader'],
-                    False,  # subtitle_extracted
-                    None,   # subtitle_language
-                    None    # subtitle_json
+                    False,  # 初始值，但在 CONFLICT 时不会被覆盖
+                    None,   # 初始值，但在 CONFLICT 时不会被覆盖
+                    None,   # 初始值，但在 CONFLICT 时不会被覆盖
+                    video.get('view_count')
                 ))
             
             conn.commit()
             logger.info(f"保存了频道 '{channel_info['channel_name']}' 和 {len(videos)} 个视频")
     
     def extract_video_subtitles(self, video_id: str, video_url: str, 
-                              subtitle_lang: str = "en", cookie_string: Optional[str] = None) -> Optional[List[Dict]]:
+                               subtitle_lang: str = "en", 
+                               cookie_string: Optional[str] = None,
+                               cookie_file: Optional[Path] = None) -> Optional[List[Dict]]:
         """
         提取单个视频的字幕
         
@@ -238,7 +293,8 @@ class YouTubeChannelProcessor:
             video_id: 视频ID
             video_url: 视频URL
             subtitle_lang: 字幕语言
-            cookie_string: 可选的cookie字符串，自动转换为Netscape格式
+            cookie_string: 可选的cookie字符串
+            cookie_file: 可选的cookie文件路径
             
         Returns:
             字幕数据列表或None
@@ -258,15 +314,17 @@ class YouTubeChannelProcessor:
         
         # 处理Cookie
         temp_cookie_file = None
-        if cookie_string:
+        if cookie_file:
+            ydl_opts['cookiefile'] = str(cookie_file)
+        elif cookie_string:
             # 使用传入的cookie字符串，转换为Netscape格式
             temp_cookie_file = save_cookie_string_as_netscape(cookie_string)
             ydl_opts['cookiefile'] = str(temp_cookie_file)
         else:
-            # 使用固定的cookie文件
-            cookie_path = COOKIE_DIR / "cookies.txt"
-            if cookie_path.exists():
-                ydl_opts['cookiefile'] = str(cookie_path)
+            # 使用默认的cookie文件
+            default_cookie = COOKIE_DIR / "cookies.txt"
+            if default_cookie.exists():
+                ydl_opts['cookiefile'] = str(default_cookie)
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -337,7 +395,8 @@ class YouTubeChannelProcessor:
     
     async def process_channel_batch(self, channel_url: str, 
                                    max_videos: int = 50, subtitle_lang: str = "en", 
-                                   cookie_string: Optional[str] = None) -> Dict:
+                                   cookie_string: Optional[str] = None,
+                                   cookie_file: Optional[Path] = None) -> Dict:
         """
         批量处理频道视频（异步串行处理）
         
@@ -345,7 +404,8 @@ class YouTubeChannelProcessor:
             channel_url: YouTube频道URL
             max_videos: 最大视频数量
             subtitle_lang: 字幕语言
-            cookie_string: 可选的cookie字符串，自动转换为Netscape格式
+            cookie_string: 可选的cookie字符串
+            cookie_file: 可选的cookie文件路径
             
         Returns:
             处理结果统计
@@ -356,7 +416,7 @@ class YouTubeChannelProcessor:
         try:
             # 1. 获取频道视频列表
             logger.info("正在获取频道视频列表...")
-            channel_info, videos = self.get_channel_videos(channel_url, max_videos, cookie_string)
+            channel_info, videos = self.get_channel_videos(channel_url, max_videos, cookie_string, cookie_file)
             
             # 2. 保存频道和视频信息
             self.save_channel_and_videos(channel_info, videos)
@@ -387,7 +447,8 @@ class YouTubeChannelProcessor:
                     video['video_id'], 
                     video['url'], 
                     subtitle_lang,
-                    cookie_string
+                    cookie_string,
+                    cookie_file
                 )
                 
                 if subtitles_data:
@@ -480,6 +541,31 @@ class YouTubeChannelProcessor:
                     'total_videos': result[1] or 0,
                     'videos_with_subtitles': result[2] or 0
                 }
+
+    def get_oldest_channel(self) -> Optional[Dict]:
+        """
+        获取更新时间最早（最后一次处理时间最久）的一个频道
+        
+        Returns:
+            频道信息字典，如果不存在则返回None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            # 修改查询以支持 JSON 模式
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # 优先选择 last_processed 为空的，然后按 last_processed 升序排列
+            cursor.execute('''
+                SELECT channel_id, channel_name, channel_url, last_processed
+                FROM channels
+                ORDER BY last_processed ASC NULLS FIRST
+                LIMIT 1
+            ''')
+            
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
 
 
 # 全局处理器实例，供FastAPI使用
