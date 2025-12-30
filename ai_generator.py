@@ -122,8 +122,7 @@ class AIGenerator:
         content_prompt = (
             f"{primary_instruction}\n\n"
             f"Sources (most recent first, up to {MAX_ARTICLES} items):\n{articles_text}\n\n"
-            f"Citations requirement: Use inline citations with <sup>[n]</sup> where n corresponds to the numbered source above. "
-            f"Do NOT include a References section; only include the summary paragraphs.\n\n"
+            f"Citations requirement: Use inline citations with [n] where n corresponds to the numbered source above. "
             f"Return strict JSON with: {{ \"title\": string, \"content\": string }}\n"
             f"Only output strict JSON without code fences or commentary."
         )
@@ -169,8 +168,8 @@ class AIGenerator:
             generated_title = content_parsed.get("title", "AI Headline")
             generated_content = content_parsed.get("content", "No content available.")
             
-            # 3. 再用正则解析ai给出的编号，再拼上列表对应title和url
-            final_content = self._linkify_citations(generated_content.strip(), index_map)
+            # 3. 在内容末尾添加引用部分
+            final_content = self._add_references_section(generated_content.strip(), index_map)
             
             # ==================== Phase 2: 生成幻灯片 ====================
             logger.info("开始生成演示幻灯片...")
@@ -227,37 +226,35 @@ class AIGenerator:
                 "slides": []
             }
     
-    def _linkify_citations(self, html: str, index_map: Dict) -> str:
-        """将引用转换为可点击链接，支持 sup 和 裸露引用"""
+    def _add_references_section(self, html: str, index_map: Dict) -> str:
+        """在内容末尾添加引用部分"""
         import re
         
-        def replace(match):
-            sup_n = match.group(1)
-            bare_n = match.group(2)
+        # 收集内容中使用的所有引用编号
+        citation_pattern = r'\[(\d+)\]'
+        used_citations = set()
+        
+        for match in re.finditer(citation_pattern, html):
+            used_citations.add(int(match.group(1)))
+        
+        # 构建引用部分
+        if used_citations:
+            sorted_citations = sorted(used_citations)
+            references_list = []
             
-            n_str = sup_n or bare_n
-            if not n_str:
-                return match.group(0)
-                
-            n = int(n_str)
-            meta = index_map.get(n)
-            if not meta:
-                return match.group(0)
+            for n in sorted_citations:
+                meta = index_map.get(n)
+                if meta:
+                    href = meta.get("url", "#")
+                    title = meta["title"]
+                    references_list.append(f'[{n}] <a href="{href}" target="_blank" rel="noopener noreferrer">{title}</a>')
+                else:
+                    references_list.append(f'[{n}] (Reference not found)')
             
-            href = meta["url"]
-            title = meta["title"]
-            
-            if sup_n:
-                # <sup>[n]</sup> -> <sup><a ...>[n] Title</a></sup>
-                return f'<sup><a href="{href}" target="_blank" rel="noopener noreferrer">[{n}] {title}</a></sup>'
-            else:
-                # [n] -> <a ...>[n] Title</a>
-                return f'<a href="{href}" target="_blank" rel="noopener noreferrer">[{n}] {title}</a>'
-
-        # 组合正则：优先匹配 sup 格式，再匹配裸露格式
-        # 使用分组 1 匹配 sup 中的数字，分组 2 匹配裸露的数字
-        pattern = r'<sup>\s*\[(\d+)\]\s*</sup>|(?<![\w#])\[(\d+)\](?![\w;])'
-        return re.sub(pattern, replace, html)
+            references_section = '\n\n<h3>References</h3>\n' + '<br>\n'.join(references_list)
+            return html + references_section
+        
+        return html
     
     def _build_slides_prompt(self, content: str) -> str:
         """构建幻灯片生成提示词"""
