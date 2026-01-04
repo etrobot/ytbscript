@@ -142,7 +142,7 @@ class CookieKeepAliveService:
                 info = ydl.extract_info(test_url, download=False)
                 
                 if info:
-                    logger.info(f"Cookie验证成功: {cookie_path.name}")
+                    logger.debug(f"Cookie验证成功: {cookie_path.name}")
                     return True
                 else:
                     logger.warning(f"Cookie验证失败: 无法获取信息")
@@ -180,7 +180,7 @@ class CookieKeepAliveService:
                 if channel:
                     channel_url = channel['channel_url']
                     channel_name = channel['channel_name']
-                    logger.info(f"🔄 使用频道进行保活: {channel_name} ({channel_url})")
+                    logger.debug(f"🔄 使用频道进行保活: {channel_name} ({channel_url})")
                     
                     # 使用频道更新作为保活手段
                     # 限制每次保活只检查5个视频，避免耗时太长
@@ -189,7 +189,7 @@ class CookieKeepAliveService:
                         max_videos=5,
                         cookie_file=cookie_path
                     )
-                    logger.info(f"✅ 频道保活成功: {channel_name}")
+                    logger.debug(f"✅ 频道保活成功: {channel_name}")
                     return True
             except Exception as ce:
                 logger.warning(f"通过频道保活失败，尝试通用保活: {str(ce)}")
@@ -217,7 +217,7 @@ class CookieKeepAliveService:
                         raise
                 
                 if info:
-                    logger.info(f"Cookie通用保活成功: {cookie_path.name}")
+                    logger.debug(f"Cookie通用保活成功: {cookie_path.name}")
                     return True
                 else:
                     logger.warning(f"Cookie通用保活失败: 无法访问YouTube")
@@ -231,13 +231,13 @@ class CookieKeepAliveService:
         """暂停保活（有任务运行时调用）"""
         with self.lock:
             self.paused = True
-            logger.info("⏸️  Cookie保活已暂停（任务运行中）")
+            logger.debug("⏸️  Cookie保活已暂停（任务运行中）")
     
     def resume(self):
         """恢复保活（任务完成后调用）"""
         with self.lock:
             self.paused = False
-            logger.info("▶️  Cookie保活已恢复")
+            logger.debug("▶️  Cookie保活已恢复")
     
     def is_paused(self) -> bool:
         """检查是否暂停"""
@@ -267,7 +267,7 @@ class CookieKeepAliveService:
                 cookie_name, cookie_path = cookie_info
                 
                 # 执行保活操作
-                logger.info(f"🔄 执行cookie保活: {cookie_name}")
+                logger.debug(f"🔄 执行cookie保活: {cookie_name}")
                 success = await self.perform_keepalive(cookie_path)
                 
                 # 更新元数据
@@ -302,7 +302,7 @@ class CookieKeepAliveService:
                             self._save_metadata()
                 
                 # 等待下一次检查
-                logger.info(f"⏳ 下次保活时间: {self.check_interval}秒后")
+                logger.debug(f"⏳ 下次保活时间: {self.check_interval}秒后")
                 await asyncio.sleep(self.check_interval)
                 
             except Exception as e:

@@ -29,7 +29,7 @@ class HeadlineManager:
         Args:
             user_id: 用户ID
             title: 标题
-            content: 内容
+            content: 内容（JSON字符串，格式：{"html": string, "citedFeeds": array, "citedArticles": array}）
             article_count: 文章数量
             prompt: 提示词
             feed_ids: Feed IDs（逗号分隔或JSON）

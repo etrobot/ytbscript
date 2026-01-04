@@ -146,9 +146,15 @@ async def execute_task(task_id: str, scheduled_timestamp: int = None):
         prompt = task.get('prompt', '总结最新见解和趋势')
         result = await ai_generator.generate_headline(articles=all_articles, prompt=prompt, user_provided_prompt=bool(prompt and prompt.strip()))
         
-        # 5. 保存
+        # 5. 保存（content字段存储JSON，包含html、citedFeeds和citedArticles）
+        content_with_metadata = json.dumps({
+            "html": result.get('content', ''),
+            "citedFeeds": result.get('citedFeeds', []),
+            "citedArticles": result.get('citedArticles', [])
+        })
+        
         headline_id = get_headline_manager().insert_headline(
-            user_id=task['userId'], title=result.get('title', ''), content=result.get('content', ''),
+            user_id=task['userId'], title=result.get('title', ''), content=content_with_metadata,
             article_count=len(all_articles), prompt=prompt, feed_ids=task['feedIds'] or task.get('feedUrls'),
             slides=result.get('slides', []), created_at=scheduled_timestamp, is_scheduled=True, scheduled_task_id=task['id']
         )

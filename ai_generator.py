@@ -49,8 +49,8 @@ class AIGenerator:
         """
         二阶段生成标题和内容
         
-        Phase 1: 生成标题 + 内容（带引用）
-        Phase 2: 生成演示幻灯片
+        Phase 1: 生成标题 + 内容（带引用和sections）
+        Phase 2: 生成演示幻灯片（带citation tracking）
         
         Args:
             articles: 文章列表
@@ -61,60 +61,85 @@ class AIGenerator:
             {
                 "title": str,
                 "content": str,
-                "slides": list
+                "slides": list,
+                "citedFeeds": list,
+                "citedArticles": list
             }
         """
         if not articles:
             return {
                 "title": "无可用内容",
                 "content": "未找到可用文章进行摘要。",
-                "slides": []
+                "slides": [],
+                "citedFeeds": [],
+                "citedArticles": []
             }
         
         if not self.openai:
             return {
                 "title": "AI配置错误",
                 "content": "OpenAI API密钥未配置，跳过摘要生成。",
-                "slides": []
+                "slides": [],
+                "citedFeeds": [],
+                "citedArticles": []
             }
         
         MAX_ARTICLES = 30
         
-        # 1. 先构造列表和索引映射 (Construct list and index map)
-        index_map = {}
+        # 1. 构造列表和文章映射 (Construct list and article map with IDs)
+        article_map = {}
         articles_for_ai = []
         
         for idx, article in enumerate(articles[:MAX_ARTICLES], 1):
+            article_id = article.get('id', '')
             title = article.get('title', '无标题').strip()
             url = article.get('url', '#')
             feed_name = article.get('feedName', '未知来源')
+            feed_id = article.get('feedId', '')
+            feed_icon = article.get('feedIcon')
+            image_url = article.get('imageUrl')
             video_views = article.get('videoViews')
             
-            # 记录元数据用于后续拼装 (Pinning)
-            index_map[idx] = {
+            # 记录元数据用于后续拼装 (Store metadata with article ID)
+            article_map[article_id] = {
                 "url": url,
-                "title": title
+                "title": title,
+                "feedName": feed_name,
+                "feedId": feed_id,
+                "feedIcon": feed_icon,
+                "imageUrl": image_url,
+                "index": idx
             }
             
-            # 2. 抽取编号、title和文章给ai (Extract ID, title, and article for AI)
-            # 构建显示标题（包含热度信息，如果可用）
+            # 2. 构建带ID的文章列表给AI (Build article list with IDs for AI)
             views_str = f" ({video_views:,} views)" if isinstance(video_views, (int, float)) else ""
-            display_header = f"[{idx}] {title}{views_str} — {feed_name}"
+            display_header = f"{idx}. [ID: {article_id}] {title} — {feed_name}{views_str}"
             
             # 获取并合并内容
-            video_transcript = article.get('videoTranscript', '')
-            merged_source = video_transcript or self.merge_summary_content(article.get('summary', ''), article.get('content', ''))
-            snippet = self.truncate_text(merged_source, 1500)
+            summary = article.get('summary', '')
+            content = article.get('content', '')
+            video_transcript = article.get('videoTranscript', '') or ''
             
-            articles_for_ai.append(f"{display_header}\n{snippet}")
+            # 智能合并内容，避免重复
+            if summary and content:
+                # 检查summary开头20字符是否与content开头20字符相同
+                if summary[:20] == content[:20]:
+                    merged_source = content + video_transcript
+                else:
+                    merged_source = summary + content + video_transcript
+            else:
+                merged_source = (summary or content) + video_transcript
+            
+            snippet = self.truncate_text(merged_source, 1500)
+            articles_for_ai.append(f"{display_header}\n   {snippet}")
         
         articles_text = "\n\n".join(articles_for_ai)
         
-        # ==================== Phase 1: 生成标题和内容 ====================
+        # ==================== Phase 1: 生成标题和内容 (with sections and citations) ====================
         default_instruction = (
             "Create an executive-ready headline post based on the provided sources. "
             "Write concise paragraphs that synthesize key themes, trends, and actionable insights for content creators. "
-            "Use the language of the user's query."
+            "Use the language of the user's query"
         )
         
         primary_instruction = prompt.strip() if user_provided_prompt and prompt.strip() else default_instruction
@@ -122,15 +147,18 @@ class AIGenerator:
         content_prompt = (
             f"{primary_instruction}\n\n"
             f"Sources (most recent first, up to {MAX_ARTICLES} items):\n{articles_text}\n\n"
-            f"Citations requirement: Use inline citations with [n] where n corresponds to the numbered source above. "
-            f"Return strict JSON with: {{ \"title\": string, \"content\": string }}\n"
+            f"Structure requirement: Organize your response into thematic sections. Each section should cite specific sources using their article IDs.\n\n"
+            f"Return strict JSON with: {{ \"title\": string, \"sections\": Array<{{ \"section\": string, \"cite\": string[] }}> }}\n"
+            f"- \"section\": A paragraph of content (2-4 sentences)\n"
+            f"- \"cite\": An array of article IDs (the ID values from the sources above) used in this section (e.g., [\"Xy3kN2mP\", \"bQ9wR5tL\"])\n"
             f"Only output strict JSON without code fences or commentary."
         )
         
         logger.info(f"开始生成内容，使用 {len(articles[:MAX_ARTICLES])} 篇文章...")
+        logger.info(f"Content prompt: {content_prompt[:500]}...")
         
         try:
-            # Phase 1: 内容生成
+            # Phase 1: 内容生成（结构化sections with citations）
             content_response = await self.openai.chat.completions.create(
                 model=self.model,
                 temperature=0.4,
@@ -150,10 +178,23 @@ class AIGenerator:
                         "name": "ai_headline_content",
                         "schema": {
                             "type": "object",
-                            "required": ["title", "content"],
+                            "required": ["title", "sections"],
                             "properties": {
                                 "title": {"type": "string"},
-                                "content": {"type": "string"}
+                                "sections": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["section", "cite"],
+                                        "properties": {
+                                            "section": {"type": "string"},
+                                            "cite": {
+                                                "type": "array",
+                                                "items": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -166,15 +207,55 @@ class AIGenerator:
             
             content_parsed = json.loads(content_raw)
             generated_title = content_parsed.get("title", "AI Headline")
-            generated_content = content_parsed.get("content", "No content available.")
+            sections = content_parsed.get("sections", [])
             
-            # 3. 在内容末尾添加引用部分
-            final_content = self._add_references_section(generated_content.strip(), index_map)
+            # 收集所有被引用的文章ID (Collect all cited article IDs)
+            used_article_ids = set()
+            for sec in sections:
+                cite_array = sec.get("cite", [])
+                if isinstance(cite_array, list):
+                    for article_id in cite_array:
+                        if article_id and isinstance(article_id, str):
+                            used_article_ids.add(article_id)
             
-            # ==================== Phase 2: 生成幻灯片 ====================
+            # 构建HTML内容（带内联引用） (Build HTML content with inline citations)
+            generated_content = ""
+            for sec in sections:
+                paragraph = sec.get("section", "")
+                cite_array = sec.get("cite", []) if isinstance(sec.get("cite"), list) else []
+                
+                if paragraph:
+                    # 将文章ID映射到索引号用于显示 (Map article IDs to index numbers for display)
+                    citation_numbers = [
+                        article_map[article_id]["index"]
+                        for article_id in cite_array
+                        if article_id in article_map
+                    ]
+                    
+                    citation_html = f" <sup>[{', '.join(map(str, citation_numbers))}]</sup>" if citation_numbers else ""
+                    generated_content += f"<p>{paragraph}{citation_html}</p>\n\n"
+            
+            # 构建引用部分（只包含被使用的引用，按索引排序） (Build references section)
+            references_section = ""
+            if used_article_ids:
+                sorted_articles = sorted(
+                    [article_map[article_id] for article_id in used_article_ids if article_id in article_map],
+                    key=lambda x: x["index"]
+                )
+                
+                references_list = "<br>\n".join(
+                    f'[{meta["index"]}] <a href="{meta["url"] or "#"}" target="_blank" rel="noopener noreferrer">{meta["title"]}</a> — {meta["feedName"]}'
+                    for meta in sorted_articles
+                )
+                
+                references_section = f"\n\n<h3>References</h3>\n{references_list}"
+            
+            final_content = generated_content.strip() + references_section
+            
+            # ==================== Phase 2: 生成幻灯片（带citation tracking） ====================
             logger.info("开始生成演示幻灯片...")
             
-            slides_prompt = self._build_slides_prompt(generated_content)
+            slides_prompt = self._build_slides_prompt(sections)
             
             slides_response = await self.openai.chat.completions.create(
                 model=self.model,
@@ -182,7 +263,7 @@ class AIGenerator:
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是一位演示设计师，将摘要转换为清晰、数据优先的幻灯片。"
+                        "content": "You are a presentation designer that converts summaries into clear, data-first slides."
                     },
                     {
                         "role": "user",
@@ -203,12 +284,39 @@ class AIGenerator:
                 slides_parsed = json.loads(slides_raw)
                 slides = slides_parsed.get("slides", []) if isinstance(slides_parsed, dict) else []
             
-            logger.info(f"成功生成：标题='{generated_title[:50]}...', 内容长度={len(final_content)}, 幻灯片数={len(slides)}")
+            # 提取被引用的feeds和articles (Extract cited feeds and articles)
+            cited_feed_map = {}
+            cited_articles_list = []
+            
+            for article_id in used_article_ids:
+                if article_id in article_map:
+                    article = article_map[article_id]
+                    feed_id = article["feedId"]
+                    if feed_id and feed_id not in cited_feed_map:
+                        cited_feed_map[feed_id] = {
+                            "feedId": feed_id,
+                            "feedName": article["feedName"],
+                            "feedIcon": article["feedIcon"]
+                        }
+                    cited_articles_list.append({
+                        "articleId": article_id,
+                        "articleTitle": article["title"],
+                        "feedName": article["feedName"],
+                        "feedIcon": article["feedIcon"],
+                        "imageUrl": article["imageUrl"],
+                        "url": article["url"]
+                    })
+            
+            cited_feeds = list(cited_feed_map.values())
+            
+            logger.info(f"成功生成：标题='{generated_title[:50]}...', 内容长度={len(final_content)}, 幻灯片数={len(slides)}, 引用feeds={len(cited_feeds)}, 引用articles={len(cited_articles_list)}")
             
             return {
                 "title": generated_title,
                 "content": final_content,
-                "slides": slides
+                "slides": slides,
+                "citedFeeds": cited_feeds,
+                "citedArticles": cited_articles_list
             }
         
         except json.JSONDecodeError as e:
@@ -216,14 +324,18 @@ class AIGenerator:
             return {
                 "title": "生成的标题",
                 "content": "解析AI响应时出错",
-                "slides": []
+                "slides": [],
+                "citedFeeds": [],
+                "citedArticles": []
             }
         except Exception as e:
             logger.error(f"OpenAI API错误: {e}")
             return {
                 "title": "生成标题时出错",
                 "content": str(e),
-                "slides": []
+                "slides": [],
+                "citedFeeds": [],
+                "citedArticles": []
             }
     
     def _add_references_section(self, html: str, index_map: Dict) -> str:
@@ -256,59 +368,27 @@ class AIGenerator:
         
         return html
     
-    def _build_slides_prompt(self, content: str) -> str:
+    def _build_slides_prompt(self, sections: List[Dict]) -> str:
         """构建幻灯片生成提示词"""
+        sections_json = json.dumps(sections, ensure_ascii=False, indent=2)
         return (
-            f"你是一个演示应用的JSON数据生成器。\n"
-            f"你的任务是将执行摘要转换为一个扁平的JSON对象，表示带有每张幻灯片引人入胜脚本的幻灯片组。\n\n"
+            f"Create a rich set of 7-10 presentation slides from the following executive summary. Prioritize breadth of coverage and clarity.\n\n"
             
-            f"必需的JSON结构：\n"
-            f"{{\n"
-            f"  \"slides\": [\n"
-            f"    {{\n"
-            f"      \"type\": \"bullets\",\n"
-            f"      \"title\": \"幻灯片标题\",\n"
-            f"      \"subtitle\": \"可选副标题\",\n"
-            f"      \"bulletItems\": [{{\"icon\": \"trending\", \"title\": \"要点标题\", \"subtitle\": \"4-10字解释\"}}],\n"
-            f"      \"bullets\": [\"旧版支持\"],\n"
-            f"      \"script\": \"解释这些要点的口述旁白。\"\n"
-            f"    }},\n"
-            f"    {{\n"
-            f"      \"type\": \"bigNumber\",\n"
-            f"      \"title\": \"关键指标\",\n"
-            f"      \"highlightVal\": 100,\n"
-            f"      \"highlightDesc\": \"增长描述\",\n"
-            f"      \"script\": \"突出这个数字的口述旁白。\"\n"
-            f"    }},\n"
-            f"    {{\n"
-            f"      \"type\": \"barChart\",\n"
-            f"      \"title\": \"数据趋势\",\n"
-            f"      \"chartData\": [{{\"name\": \"Q1\", \"value\": 10}}, {{\"name\": \"Q2\", \"value\": 20}}],\n"
-            f"      \"script\": \"分析这一趋势的口述旁白。\"\n"
-            f"    }}\n"
-            f"  ]\n"
-            f"}}\n\n"
+            f"Requirements:\n"
+            f"- Do not include a separate cover/title slide. Start directly with substantive slides.\n"
+            f"- Mix slide types and include at least: 1 bullets slide, 1 bigNumber slide, and 1 chart slide (barChart or pieChart or lineChart).\n"
+            f"- Do not cap bullet count artificially; use as many bullets as helpful.\n"
+            f"- Prefer short, strong titles and concise scripts for narration.\n"
+            f"- IMPORTANT: Remove all HTML tags and citation references like <sup>[n]</sup> from all text content including scripts, titles, subtitles, and bullets. The content should be clean plain text suitable for narration.\n"
+            f"- CRITICAL: For each slide, include a \"cite\" field (array of article IDs) that lists which source articles are referenced in that slide's content. Extract article IDs from the citation numbers in the summary sections.\n\n"
             
-            f"生成规则：\n"
-            f"1. 输出必须是有效的JSON。\n"
-            f"2. 根据主题的复杂性生成5到10张幻灯片。\n"
-            f"3. 内容：\n"
-            f"   - 提供全面和真实的内容。\n"
-            f"   - 不要人为限制项目符号或字数。\n"
-            f"   - 在图表中使用尽可能多的数据点来显示趋势。\n"
-            f"   - 重要：从所有文本内容（包括脚本、标题、副标题和项目符号）中删除所有HTML标签和引用（如<sup>[n]</sup>）。\n"
-            f"4. \"type\"必须是：\"bullets\"、\"barChart\"、\"pieChart\"、\"lineChart\"、\"bigNumber\"之一。\n"
-            f"5. 确保多样化的幻灯片类型（不仅仅是项目符号）。\n"
-            f"6. 关键：每张幻灯片的\"script\"必须是适合配音的简洁、引人入胜的旁白段落。\n"
-            f"7. 对于项目符号风格的幻灯片，优先使用带有结构化数据的\"bulletItems\"：\n"
-            f"   - \"icon\"：使用语义关键词，如\"trending\"、\"sparkles\"、\"chart\"、\"clock\"、\"target\"、\"users\"、\"globe\"、\"zap\"、\"check\"、\"rocket\"\n"
-            f"   - \"title\"：简短有力的标题\n"
-            f"   - \"subtitle\"：4-10字解释\n"
-            f"8. 不要包含单独的封面/标题幻灯片。直接从实质性幻灯片开始。\n\n"
+            f"Summary with sections and citations:\n{sections_json}\n\n"
             
-            f"要转换的执行摘要：\n{content}\n\n"
+            f"Return strict JSON with: {{ \"slides\": Slide[] }} where Slide = {{ \"type\": \"bullets|barChart|pieChart|lineChart|bigNumber\", \"title\": string, \"subtitle\": string, \"bulletItems\": Array<{{\"icon\"?: string, \"title\": string, \"subtitle\"?: string}}>, \"bullets\"?: string[], \"highlightVal\"?: number, \"highlightDesc\"?: string, \"chartData\"?: [{{\"name\": string, \"value\": number}}], \"footer\"?: string, \"script\": string, \"cite\": string[] }}\n\n"
             
-            f"仅输出严格的JSON，不包含代码围栏或注释。"
+            f"For any bullets-style content, prefer \"bulletItems\" with short, punchy titles and a 4-10 word subtitle. Use a simple semantic icon keyword like \"trending\", \"sparkles\", \"chart\", \"clock\", \"target\", \"users\", \"globe\", \"zap\", \"check\", or \"rocket\".\n\n"
+            
+            f"Only output strict JSON without code fences or commentary."
         )
     
     def _get_slides_json_schema(self) -> Dict:
@@ -361,7 +441,11 @@ class AIGenerator:
                                     }
                                 },
                                 "footer": {"type": "string"},
-                                "script": {"type": "string"}
+                                "script": {"type": "string"},
+                                "cite": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
                             }
                         }
                     }
