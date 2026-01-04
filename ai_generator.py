@@ -380,7 +380,7 @@ class AIGenerator:
             f"- Do not cap bullet count artificially; use as many bullets as helpful.\n"
             f"- Prefer short, strong titles and concise scripts for narration.\n"
             f"- IMPORTANT: Remove all HTML tags and citation references like <sup>[n]</sup> from all text content including scripts, titles, subtitles, and bullets. The content should be clean plain text suitable for narration.\n"
-            f"- CRITICAL: For each slide, include a \"cite\" field (array of article IDs) that lists which source articles are referenced in that slide's content. Extract article IDs from the citation numbers in the summary sections.\n\n"
+            f"- CRITICAL: For each slide, include a \"cite\" field (array of article IDs) that lists which source articles are referenced in that slide's content. Use the same article ID format from the sections' cite arrays (e.g., [\"qu7wef0dly08eiyno7bvl1gu\", \"y1ecic2mv5wiavkjpcyyij9x\"]). Do NOT use numeric indices.\n\n"
             
             f"Summary with sections and citations:\n{sections_json}\n\n"
             
