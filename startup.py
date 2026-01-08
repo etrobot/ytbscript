@@ -62,18 +62,18 @@ async def initialize_scheduler():
         from scheduler_service import TaskScheduler
         
         scheduler = TaskScheduler()
-        await scheduler.init_db()
         
         # 在当前事件循环中启动调度器
+        # 修正：使用 minutes=1 而不是 hours=1，确保每分钟检查一次
         scheduler.scheduler.add_job(
             scheduler.check_schedule, 
             'interval', 
-            hours=1, 
+            minutes=1,  # 每分钟检查一次
             next_run_time=datetime.now()
         )
         scheduler.scheduler.start()
         
-        logger.info("✅ 调度服务已启动")
+        logger.info("✅ 调度服务已启动（每分钟检查，提前1小时运行策略）")
         logger.info("✅ AI总结定时任务已就绪")
         return scheduler
     except Exception as e:
