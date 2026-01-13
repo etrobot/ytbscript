@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class D1TaskManager:
     """D1 任务管理器"""
-    
+
     def __init__(self):
         self.d1 = D1Client()
 
@@ -25,7 +25,7 @@ class D1TaskManager:
             return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         except Exception:
             return "时间格式错误"
-    
+
     def get_active_tasks(self) -> List[Dict]:
         """获取所有活跃的任务"""
         try:
@@ -35,18 +35,46 @@ class D1TaskManager:
             except Exception:
                 # 回退到 camelCase (旧版数据库)
                 tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE isActive = 1")
-            
+
             now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             logger.info(f"获取到 {len(tasks)} 个活跃任务 | 当前UTC: {now_utc}")
 
             # 输出每个任务的调度信息，方便排查
             for task in tasks:
                 task_id = (task.get('id') or '')[:8]
-                sh = task.get('scheduled_hour') or task.get('scheduledHour')
-                sm = task.get('scheduled_minute') if task.get('scheduled_minute') is not None else task.get('scheduledMinute', 0)
+
+                # 先把整行原始数据 & 所有 key 打出来，方便和 D1 控制台对比
+                logger.info(f"  [RAW TASK {task_id}] {task}")
+                logger.info(f"  [RAW KEYS {task_id}] {list(task.keys())}")
+
+                sh_db = task.get('scheduled_hour')
+                sh_db_old = task.get('scheduledHour')
+                sm_db = task.get('scheduled_minute')
+                sm_db_old = task.get('scheduledMinute')
+
+                # 逻辑上用于调度的 hour/minute
+                sh = sh_db if sh_db is not None else sh_db_old
+                sm = sm_db if sm_db is not None else sm_db_old
+
                 last_exec = task.get('last_executed_at') or task.get('lastExecutedAt')
-                scheduled_text = f"{sh:02d}:{sm:02d} UTC" if sh is not None else "未设定"
-                logger.info(f"  - 任务 {task_id} | 计划: {scheduled_text} | 上次执行: {self._format_ts(last_exec)}")
+
+                if sh is not None and sm is not None:
+                    scheduled_text = f"{int(sh):02d}:{int(sm):02d} UTC"
+                elif sh is not None:
+                    scheduled_text = f"{int(sh):02d}:-- UTC"
+                else:
+                    scheduled_text = "未设定"
+
+                logger.info(
+                    "  - 任务 %s | 计划: %s | 上次执行: %s | raw(hour=%r, Hour=%r, minute=%r, Minute=%r)",
+                    task_id,
+                    scheduled_text,
+                    self._format_ts(last_exec),
+                    sh_db,
+                    sh_db_old,
+                    sm_db,
+                    sm_db_old,
+                )
             return tasks
         except Exception as e:
             logger.error(f"获取活跃任务失败: {e}")
@@ -61,7 +89,7 @@ class D1TaskManager:
         except Exception as e:
             logger.error(f"获取所有任务失败: {e}")
             return []
-    
+
     def get_task_by_id(self, task_id: str) -> Optional[Dict]:
         """根据ID获取任务"""
         try:
@@ -74,7 +102,7 @@ class D1TaskManager:
         except Exception as e:
             logger.error(f"获取任务 {task_id} 失败: {e}")
             return None
-    
+
     def get_tasks_by_user(self, user_id: str) -> List[Dict]:
         """获取用户的所有任务"""
         try:
@@ -84,13 +112,13 @@ class D1TaskManager:
             except Exception:
                 # 回退到 camelCase (旧版数据库)
                 tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE userId = ?", [user_id])
-            
+
             logger.info(f"用户 {user_id} 有 {len(tasks)} 个任务")
             return tasks
         except Exception as e:
             logger.error(f"获取用户 {user_id} 的任务失败: {e}")
             return []
-    
+
     def update_task_execution_time(self, task_id: str, execution_time: int):
         """更新任务最后执行时间"""
         try:
@@ -104,43 +132,43 @@ class D1TaskManager:
                 self.d1.execute("""
                     UPDATE scheduled_tasks SET lastExecutedAt = ? WHERE id = ?
                 """, [execution_time, task_id])
-            
+
             logger.info(f"更新任务 {task_id} 执行时间: {execution_time}")
         except Exception as e:
             logger.error(f"更新任务执行时间失败: {e}")
             raise
-    
-    def create_task(self, user_id: str, task_type: str, scheduled_hour: int, 
+
+    def create_task(self, user_id: str, task_type: str, scheduled_hour: int,
                    feed_ids: str, prompt: str = None, scheduled_minute: int = 0) -> str:
         """创建新任务"""
         import uuid
         import time
-        
+
         try:
             task_id = str(uuid.uuid4())
             now = int(time.time() * 1000)
-            
+
             # 尝试 snake_case (新版数据库)
             try:
                 self.d1.execute("""
-                    INSERT INTO scheduled_tasks 
+                    INSERT INTO scheduled_tasks
                     (id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, is_active, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, now, now])
             except Exception:
                 # 回退到 camelCase (旧版数据库)
                 self.d1.execute("""
-                    INSERT INTO scheduled_tasks 
+                    INSERT INTO scheduled_tasks
                     (id, userId, taskType, scheduledHour, scheduledMinute, feedIds, prompt, isActive, createdAt, updatedAt)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, now, now])
-            
+
             logger.info(f"创建任务成功: {task_id}")
             return task_id
         except Exception as e:
             logger.error(f"创建任务失败: {e}")
             raise
-    
+
     def deactivate_task(self, task_id: str):
         """停用任务"""
         try:
@@ -150,7 +178,7 @@ class D1TaskManager:
             except Exception:
                 # 回退到 camelCase (旧版数据库)
                 self.d1.execute("UPDATE scheduled_tasks SET isActive = 0 WHERE id = ?", [task_id])
-            
+
             logger.info(f"任务 {task_id} 已停用")
         except Exception as e:
             logger.error(f"停用任务失败: {e}")

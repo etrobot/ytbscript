@@ -74,8 +74,14 @@ class TaskScheduler:
             # 检查是否有任务需要执行
             matched_tasks = []
             for task in tasks:
-                sh = task.get('scheduled_hour') or task.get('scheduledHour')
-                sm = task.get('scheduled_minute') if task.get('scheduled_minute') is not None else task.get('scheduledMinute', 0)
+                sh_db = task.get('scheduled_hour')
+                sh_db_old = task.get('scheduledHour')
+                sm_db = task.get('scheduled_minute')
+                sm_db_old = task.get('scheduledMinute')
+
+                sh = sh_db if sh_db is not None else sh_db_old
+                sm = sm_db if sm_db is not None else sm_db_old
+
                 last_exec = task.get('last_executed_at') or task.get('lastExecutedAt')
                 
                 if sh == target_hour and sm == target_minute:
