@@ -23,13 +23,15 @@ load_dotenv()
 def setup_directories():
     """设置必要的目录结构"""
     BASE_DIR = Path(__file__).parent.absolute()
-    COOKIE_DIR = BASE_DIR / "cookies"
-    DOWNLOADS_DIR = BASE_DIR / "downloads"
+    COOKIE_DIR = Path(os.getenv("COOKIES_DIR", str(BASE_DIR / "cookies")))
+    DOWNLOADS_DIR = Path(os.getenv("DOWNLOADS_DIR", str(BASE_DIR / "downloads")))
     
-    COOKIE_DIR.mkdir(exist_ok=True)
-    DOWNLOADS_DIR.mkdir(exist_ok=True)
+    COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"✅ 目录结构已创建: {BASE_DIR}")
+    logger.info(f"✅ 目录结构已确认: BASE_DIR={BASE_DIR}")
+    logger.info(f"✅ Cookie目录: {COOKIE_DIR}")
+    logger.info(f"✅ 下载目录: {DOWNLOADS_DIR}")
     return BASE_DIR, COOKIE_DIR, DOWNLOADS_DIR
 
 async def initialize_database():
@@ -140,9 +142,9 @@ def print_startup_banner():
     print(f"📖 服务版本: {config['version']}")
     print(f"🌐 服务地址: http://{config['host']}:{config['port']}")
     print(f"📚 API文档: http://{config['host']}:{config['port']}/docs")
-    print(f"📁 数据库文件: youtube_channels.db")
-    print(f"🍪 Cookie目录: ./cookies/")
-    print(f"📦 下载目录: ./downloads/")
+    print(f"📁 数据库文件: {os.getenv('DB_PATH', 'youtube_channels.db')}")
+    print(f"🍪 Cookie目录: {os.getenv('COOKIES_DIR', './cookies/')}")
+    print(f"📦 下载目录: {os.getenv('DOWNLOADS_DIR', './downloads/')}")
     print("=" * 60)
     print("🔧 集成服务:")
     print("  • FastAPI Web服务")

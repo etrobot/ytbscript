@@ -22,8 +22,14 @@ RUN uv sync --frozen --no-install-project
 # 3. 批量复制所有 Python 文件及相关资源
 COPY *.py index.html .env* ./
 
+# 设置默认环境变量
+ENV DB_PATH=/app/data/youtube_channels.db \
+    COOKIES_DIR=/app/data/cookies \
+    DOWNLOADS_DIR=/app/data/downloads \
+    PYTHONUNBUFFERED=1
+
 # 创建必要的目录
-RUN mkdir -p /app/downloads /app/cookies
+RUN mkdir -p /app/data/cookies /app/data/downloads
 
 # 暴露端口
 EXPOSE 24314

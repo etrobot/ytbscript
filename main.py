@@ -50,8 +50,8 @@ app.include_router(cookie_keepalive_router)
 
 # 使用项目本地目录
 BASE_DIR = Path(__file__).parent.absolute()
-COOKIE_DIR = BASE_DIR / "cookies"
-COOKIE_DIR.mkdir(exist_ok=True)
+COOKIE_DIR = Path(os.getenv("COOKIES_DIR", str(BASE_DIR / "cookies")))
+COOKIE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Token 验证函数
 async def verify_token(x_api_token: str = Header(None, alias="X-API-Token")):

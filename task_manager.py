@@ -31,7 +31,9 @@ class TaskManager:
     """任务管理器"""
     
     def __init__(self, db_path: str = None):
-        self.db_path = db_path or str(Path(__file__).parent / "youtube_channels.db")
+        import os
+        default_db_path = os.getenv("DB_PATH", str(Path(__file__).parent / "youtube_channels.db"))
+        self.db_path = db_path or default_db_path
         self.running_tasks: Dict[str, asyncio.Task] = {}
         self.init_task_tables()
     

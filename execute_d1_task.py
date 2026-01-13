@@ -69,22 +69,51 @@ async def fetch_missing_subtitles(processor, channel_ids: List[str]):
     """检查并获取缺失的字幕数据"""
     from cookie_keepalive_service import get_keepalive_service
     from pathlib import Path
+    
+    logger.info(f"检查 {len(channel_ids)} 个频道的字幕数据...")
+    
     cookie_dir = Path(__file__).parent / "cookies"
     keepalive_service = get_keepalive_service(cookie_dir=cookie_dir)
     fetched_count = 0
+    
     with processor.get_db_connection() as conn:
         cursor = conn.cursor()
         for channel_id in channel_ids:
-            cursor.execute("SELECT c.channel_id, c.channel_name, SUM(CASE WHEN v.subtitle_extracted = 1 THEN 1 ELSE 0 END) FROM channels c LEFT JOIN videos v ON c.channel_id = v.channel_id WHERE c.channel_id = ? GROUP BY c.channel_id", (channel_id,))
+            cursor.execute("SELECT c.channel_id, c.channel_name, SUM(CASE WHEN v.subtitle_extracted = 1 THEN 1 ELSE 0 END) as subtitle_count FROM channels c LEFT JOIN videos v ON c.channel_id = v.channel_id WHERE c.channel_id = ? GROUP BY c.channel_id", (channel_id,))
             row = cursor.fetchone()
-            if not row or (row[2] or 0) == 0:
+            
+            if not row:
+                logger.info(f"  频道 {channel_id[:8]}... 不在数据库中，开始抓取...")
+                subtitle_count = 0
+            else:
+                subtitle_count = row[2] or 0
+                logger.info(f"  频道 {channel_id[:8]}... ({row[1]}) 已有 {subtitle_count} 个字幕")
+            
+            if not row or subtitle_count == 0:
                 cookie_info = keepalive_service.get_active_cookie()
-                if not cookie_info: continue
+                if not cookie_info:
+                    logger.warning(f"  跳过 {channel_id[:8]}...: 没有可用的cookie")
+                    continue
+                    
                 _, cookie_path = cookie_info
+                logger.info(f"  开始抓取频道 {channel_id[:8]}... (max 5 videos)...")
+                
                 try:
-                    await processor.process_channel_batch(f"https://www.youtube.com/channel/{channel_id}", max_videos=5, cookie_file=cookie_path)
+                    result = await processor.process_channel_batch(
+                        f"https://www.youtube.com/channel/{channel_id}", 
+                        max_videos=5, 
+                        cookie_file=cookie_path
+                    )
                     fetched_count += 1
-                except Exception as e: logger.error(f"获取字幕失败 {channel_id}: {e}")
+                    logger.info(f"  ✓ 频道 {channel_id[:8]}... 抓取完成")
+                except Exception as e:
+                    logger.error(f"  ✗ 频道 {channel_id[:8]}... 抓取失败: {e}")
+    
+    if fetched_count > 0:
+        logger.info(f"字幕抓取完成: {fetched_count}/{len(channel_ids)} 个频道")
+    else:
+        logger.info(f"无需抓取字幕（已有数据或无可用cookie）")
+    
     return fetched_count
 
 async def execute_task(task_id: str, scheduled_timestamp: int = None):

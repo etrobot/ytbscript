@@ -15,7 +15,8 @@ docker-compose --profile local up -d
 本地环境特点：
 - 容器名称：`ytbscript-local`
 - 端口映射：`24314:24314`
-- 使用本地目录挂载（`./downloads` 和 `./cookies`）
+- 数据持久化：使用 `./data` 目录挂载到容器内的 `/app/data`
+- 环境变量：支持通过 `DB_PATH`, `COOKIES_DIR`, `DOWNLOADS_DIR` 自定义路径
 - 访问地址：http://localhost:24314
 
 ### 生产环境

@@ -21,9 +21,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 数据库配置
+import os
 BASE_DIR = Path(__file__).parent.absolute()
-DB_PATH = BASE_DIR / "youtube_channels.db"
-COOKIE_DIR = BASE_DIR / "cookies"
+DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "youtube_channels.db")))
+COOKIE_DIR = Path(os.getenv("COOKIES_DIR", str(BASE_DIR / "cookies")))
+DOWNLOADS_DIR = Path(os.getenv("DOWNLOADS_DIR", str(BASE_DIR / "downloads")))
 
 
 class YouTubeChannelProcessor:
