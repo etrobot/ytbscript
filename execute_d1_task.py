@@ -98,11 +98,11 @@ async def execute_task(task_id: str, scheduled_timestamp: int = None):
 
         task = {
             'id': task_raw.get('id'),
-            'user_id': task_raw.get('user_id'),
-            'task_type': task_raw.get('task_type'),
-            'feed_ids': task_raw.get('feed_ids'),
+            'user_id': task_raw.get('user_id') or task_raw.get('userId'),
+            'task_type': task_raw.get('task_type') or task_raw.get('taskType'),
+            'feed_ids': task_raw.get('feed_ids') or task_raw.get('feedIds'),
             'prompt': task_raw.get('prompt'),
-            'feed_urls': task_raw.get('feed_urls'),
+            'feed_urls': task_raw.get('feed_urls') or task_raw.get('feedUrls'),
         }
 
         # 1. 解析 Feed

@@ -348,14 +348,24 @@ async def get_scheduled_tasks():
         
         # 尝试从D1数据库获取定时任务
         try:
-            tasks = scheduler.d1.fetch_all("SELECT * FROM scheduled_tasks ORDER BY created_at DESC")
+            # 尝试 snake_case (新版数据库)
+            try:
+                tasks = scheduler.d1.fetch_all("SELECT * FROM scheduled_tasks ORDER BY created_at DESC")
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                tasks = scheduler.d1.fetch_all("SELECT * FROM scheduled_tasks ORDER BY createdAt DESC")
             result["scheduled_tasks"] = tasks
         except Exception as e:
             result["errors"].append(f"D1数据库scheduled_tasks查询失败: {str(e)}")
         
         # 尝试从D1数据库获取AI生成的headlines
         try:
-            headlines = scheduler.d1.fetch_all("SELECT * FROM ai_headlines ORDER BY created_at DESC LIMIT 10")
+            # 尝试 snake_case (新版数据库)
+            try:
+                headlines = scheduler.d1.fetch_all("SELECT * FROM ai_headlines ORDER BY created_at DESC LIMIT 10")
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                headlines = scheduler.d1.fetch_all("SELECT * FROM ai_headlines ORDER BY createdAt DESC LIMIT 10")
             result["recent_headlines"] = headlines
         except Exception as e:
             result["errors"].append(f"D1数据库ai_headlines查询失败: {str(e)}")

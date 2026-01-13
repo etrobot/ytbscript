@@ -50,15 +50,29 @@ class HeadlineManager:
             # 序列化幻灯片
             slides_json = json.dumps(slides) if slides else None
             
-            self.d1.execute("""
-                INSERT INTO ai_headlines 
-                (id, user_id, title, content, article_count, prompt, feed_ids, slides, created_at, is_scheduled, scheduled_task_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [
-                headline_id, user_id, title, content, article_count, 
-                prompt or '', feed_ids or '', slides_json, created_at,
-                1 if is_scheduled else 0, scheduled_task_id
-            ])
+            # 尝试 snake_case (新版数据库)
+            try:
+                self.d1.execute("""
+                    INSERT INTO ai_headlines 
+                    (id, user_id, title, content, article_count, prompt, feed_ids, slides, created_at, is_scheduled, scheduled_task_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    headline_id, user_id, title, content, article_count, 
+                    prompt or '', feed_ids or '', slides_json, created_at,
+                    1 if is_scheduled else 0, scheduled_task_id
+                ])
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                self.d1.execute("""
+                    INSERT INTO ai_headlines 
+                    (id, userId, title, content, articleCount, prompt, feedIds, slides, createdAt, isScheduled, scheduledTaskId)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    headline_id, user_id, title, content, article_count, 
+                    prompt or '', feed_ids or '', slides_json, created_at,
+                    1 if is_scheduled else 0, scheduled_task_id
+                ])
+            
             logger.info(f"成功插入AI标题: {headline_id}")
             
             return headline_id
@@ -103,10 +117,18 @@ class HeadlineManager:
             标题列表
         """
         try:
-            headlines = self.d1.fetch_all(
-                "SELECT * FROM ai_headlines WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-                [user_id, limit]
-            )
+            # 尝试 snake_case (新版数据库)
+            try:
+                headlines = self.d1.fetch_all(
+                    "SELECT * FROM ai_headlines WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                    [user_id, limit]
+                )
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                headlines = self.d1.fetch_all(
+                    "SELECT * FROM ai_headlines WHERE userId = ? ORDER BY createdAt DESC LIMIT ?",
+                    [user_id, limit]
+                )
             
             # 反序列化幻灯片
             for headline in headlines:
@@ -125,10 +147,18 @@ class HeadlineManager:
     def get_recent_headlines(self, limit: int = 10) -> List[Dict]:
         """获取最近的标题"""
         try:
-            headlines = self.d1.fetch_all(
-                "SELECT * FROM ai_headlines ORDER BY created_at DESC LIMIT ?",
-                [limit]
-            )
+            # 尝试 snake_case (新版数据库)
+            try:
+                headlines = self.d1.fetch_all(
+                    "SELECT * FROM ai_headlines ORDER BY created_at DESC LIMIT ?",
+                    [limit]
+                )
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                headlines = self.d1.fetch_all(
+                    "SELECT * FROM ai_headlines ORDER BY createdAt DESC LIMIT ?",
+                    [limit]
+                )
             
             # 反序列化幻灯片
             for headline in headlines:
@@ -212,10 +242,18 @@ class HeadlineManager:
         """
         try:
             # 使用 LIKE 查询，因为 feed_ids 是逗号分隔的字符串
-            headlines = self.d1.fetch_all(
-                "SELECT * FROM ai_headlines WHERE feed_ids LIKE ? ORDER BY created_at DESC LIMIT ?",
-                [f"%{feed_ids}%", limit]
-            )
+            # 尝试 snake_case (新版数据库)
+            try:
+                headlines = self.d1.fetch_all(
+                    "SELECT * FROM ai_headlines WHERE feed_ids LIKE ? ORDER BY created_at DESC LIMIT ?",
+                    [f"%{feed_ids}%", limit]
+                )
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                headlines = self.d1.fetch_all(
+                    "SELECT * FROM ai_headlines WHERE feedIds LIKE ? ORDER BY createdAt DESC LIMIT ?",
+                    [f"%{feed_ids}%", limit]
+                )
             
             # 反序列化幻灯片
             for headline in headlines:
@@ -242,15 +280,28 @@ class HeadlineManager:
             统计信息字典
         """
         try:
-            if user_id:
-                total = self.d1.fetch_one(
-                    "SELECT COUNT(*) as count, SUM(article_count) as total_articles FROM ai_headlines WHERE user_id = ?",
-                    [user_id]
-                )
-            else:
-                total = self.d1.fetch_one(
-                    "SELECT COUNT(*) as count, SUM(article_count) as total_articles FROM ai_headlines"
-                )
+            # 尝试 snake_case (新版数据库)
+            try:
+                if user_id:
+                    total = self.d1.fetch_one(
+                        "SELECT COUNT(*) as count, SUM(article_count) as total_articles FROM ai_headlines WHERE user_id = ?",
+                        [user_id]
+                    )
+                else:
+                    total = self.d1.fetch_one(
+                        "SELECT COUNT(*) as count, SUM(article_count) as total_articles FROM ai_headlines"
+                    )
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                if user_id:
+                    total = self.d1.fetch_one(
+                        "SELECT COUNT(*) as count, SUM(articleCount) as total_articles FROM ai_headlines WHERE userId = ?",
+                        [user_id]
+                    )
+                else:
+                    total = self.d1.fetch_one(
+                        "SELECT COUNT(*) as count, SUM(articleCount) as total_articles FROM ai_headlines"
+                    )
             
             stats = {
                 "total_headlines": total.get('count', 0) if total else 0,

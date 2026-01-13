@@ -23,8 +23,8 @@ class TaskScheduler:
         # 1. 计算目标计划时间戳
         # 如果没有传入明确的计划时间，尝试从任务信息中获取
         if not original_scheduled_time:
-            sh = task_raw.get('scheduled_hour')
-            sm = task_raw.get('scheduled_minute', 0)
+            sh = task_raw.get('scheduled_hour') or task_raw.get('scheduledHour')
+            sm = task_raw.get('scheduled_minute') if task_raw.get('scheduled_minute') is not None else task_raw.get('scheduledMinute', 0)
             if sh is not None:
                 original_scheduled_time = (sh, sm)
 
@@ -62,9 +62,9 @@ class TaskScheduler:
         try:
             tasks = self.task_manager.get_active_tasks()
             for task in tasks:
-                sh = task.get('scheduled_hour')
-                sm = task.get('scheduled_minute', 0)
-                last_exec = task.get('last_executed_at')
+                sh = task.get('scheduled_hour') or task.get('scheduledHour')
+                sm = task.get('scheduled_minute') if task.get('scheduled_minute') is not None else task.get('scheduledMinute', 0)
+                last_exec = task.get('last_executed_at') or task.get('lastExecutedAt')
                 
                 if sh == target_hour and sm == target_minute:
                     # 避免一分钟内重复触发

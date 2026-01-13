@@ -17,7 +17,13 @@ class D1TaskManager:
     def get_active_tasks(self) -> List[Dict]:
         """获取所有活跃的任务"""
         try:
-            tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE is_active = 1")
+            # 尝试 snake_case (新版数据库)
+            try:
+                tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE is_active = 1")
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE isActive = 1")
+            
             logger.info(f"获取到 {len(tasks)} 个活跃任务")
             return tasks
         except Exception as e:
@@ -50,7 +56,13 @@ class D1TaskManager:
     def get_tasks_by_user(self, user_id: str) -> List[Dict]:
         """获取用户的所有任务"""
         try:
-            tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE user_id = ?", [user_id])
+            # 尝试 snake_case (新版数据库)
+            try:
+                tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE user_id = ?", [user_id])
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                tasks = self.d1.fetch_all("SELECT * FROM scheduled_tasks WHERE userId = ?", [user_id])
+            
             logger.info(f"用户 {user_id} 有 {len(tasks)} 个任务")
             return tasks
         except Exception as e:
@@ -60,9 +72,17 @@ class D1TaskManager:
     def update_task_execution_time(self, task_id: str, execution_time: int):
         """更新任务最后执行时间"""
         try:
-            self.d1.execute("""
-                UPDATE scheduled_tasks SET last_executed_at = ? WHERE id = ?
-            """, [execution_time, task_id])
+            # 尝试 snake_case (新版数据库)
+            try:
+                self.d1.execute("""
+                    UPDATE scheduled_tasks SET last_executed_at = ? WHERE id = ?
+                """, [execution_time, task_id])
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                self.d1.execute("""
+                    UPDATE scheduled_tasks SET lastExecutedAt = ? WHERE id = ?
+                """, [execution_time, task_id])
+            
             logger.info(f"更新任务 {task_id} 执行时间: {execution_time}")
         except Exception as e:
             logger.error(f"更新任务执行时间失败: {e}")
@@ -78,11 +98,20 @@ class D1TaskManager:
             task_id = str(uuid.uuid4())
             now = int(time.time() * 1000)
             
-            self.d1.execute("""
-                INSERT INTO scheduled_tasks 
-                (id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, now, now])
+            # 尝试 snake_case (新版数据库)
+            try:
+                self.d1.execute("""
+                    INSERT INTO scheduled_tasks 
+                    (id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, now, now])
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                self.d1.execute("""
+                    INSERT INTO scheduled_tasks 
+                    (id, userId, taskType, scheduledHour, scheduledMinute, feedIds, prompt, isActive, createdAt, updatedAt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, now, now])
             
             logger.info(f"创建任务成功: {task_id}")
             return task_id
@@ -93,7 +122,13 @@ class D1TaskManager:
     def deactivate_task(self, task_id: str):
         """停用任务"""
         try:
-            self.d1.execute("UPDATE scheduled_tasks SET is_active = 0 WHERE id = ?", [task_id])
+            # 尝试 snake_case (新版数据库)
+            try:
+                self.d1.execute("UPDATE scheduled_tasks SET is_active = 0 WHERE id = ?", [task_id])
+            except Exception:
+                # 回退到 camelCase (旧版数据库)
+                self.d1.execute("UPDATE scheduled_tasks SET isActive = 0 WHERE id = ?", [task_id])
+            
             logger.info(f"任务 {task_id} 已停用")
         except Exception as e:
             logger.error(f"停用任务失败: {e}")
