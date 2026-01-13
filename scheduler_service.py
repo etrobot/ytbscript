@@ -22,7 +22,10 @@ class TaskScheduler:
     async def run_task(self, task_raw, original_scheduled_time=None):
         """调用 execute_d1_task 运行任务"""
         task_id = task_raw.get('id')
-        logger.info(f"--- 调度器触发任务执行: {task_id} ---")
+        now_utc = datetime.now(timezone.utc)
+        logger.info(
+            f"--- 调度器触发任务执行: {task_id} | 触发时间: {now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')} ---"
+        )
         
         # 1. 计算目标计划时间戳
         # 如果没有传入明确的计划时间，尝试从任务信息中获取
