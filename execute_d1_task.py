@@ -98,22 +98,22 @@ async def execute_task(task_id: str, scheduled_timestamp: int = None):
 
         task = {
             'id': task_raw.get('id'),
-            'userId': task_raw.get('userId') or task_raw.get('user_id'),
-            'taskType': task_raw.get('taskType') or task_raw.get('task_type'),
-            'feedIds': task_raw.get('feedIds') or task_raw.get('feed_ids'),
+            'user_id': task_raw.get('user_id'),
+            'task_type': task_raw.get('task_type'),
+            'feed_ids': task_raw.get('feed_ids'),
             'prompt': task_raw.get('prompt'),
-            'feedUrls': task_raw.get('feedUrls') or task_raw.get('feed_urls'),
+            'feed_urls': task_raw.get('feed_urls'),
         }
 
         # 1. 解析 Feed
         feed_mapping = {}
-        feed_urls_raw = task.get('feedUrls')
+        feed_urls_raw = task.get('feed_urls')
         if feed_urls_raw:
             urls = json.loads(feed_urls_raw) if isinstance(feed_urls_raw, str) and feed_urls_raw.startswith('[') else ([u.strip() for u in feed_urls_raw.split(',')] if isinstance(feed_urls_raw, str) else feed_urls_raw)
             feed_mapping = resolve_feed_urls_to_channel_ids(urls)
         
         if not feed_mapping:
-            ids_raw = task.get('feedIds') or ''
+            ids_raw = task.get('feed_ids') or ''
             ids = json.loads(ids_raw) if isinstance(ids_raw, str) and ids_raw.startswith('[') else ([i.strip() for i in ids_raw.split(',')] if isinstance(ids_raw, str) else ids_raw)
             feed_mapping = resolve_feed_ids_to_channel_ids(ids)
 
@@ -154,8 +154,8 @@ async def execute_task(task_id: str, scheduled_timestamp: int = None):
         })
         
         headline_id = get_headline_manager().insert_headline(
-            user_id=task['userId'], title=result.get('title', ''), content=content_with_metadata,
-            article_count=len(all_articles), prompt=prompt, feed_ids=task['feedIds'] or task.get('feedUrls'),
+            user_id=task['user_id'], title=result.get('title', ''), content=content_with_metadata,
+            article_count=len(all_articles), prompt=prompt, feed_ids=task['feed_ids'] or task.get('feed_urls'),
             slides=result.get('slides', []), created_at=scheduled_timestamp, is_scheduled=True, scheduled_task_id=task['id']
         )
         

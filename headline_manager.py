@@ -50,34 +50,16 @@ class HeadlineManager:
             # 序列化幻灯片
             slides_json = json.dumps(slides) if slides else None
             
-            # 尝试 snake_case (用于 inspilot-db 等新版 D1)
-            try:
-                self.d1.execute("""
-                    INSERT INTO ai_headlines 
-                    (id, user_id, title, content, article_count, prompt, feed_ids, slides, created_at, is_scheduled, scheduled_task_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, [
-                    headline_id, user_id, title, content, article_count, 
-                    prompt or '', feed_ids or '', slides_json, created_at,
-                    1 if is_scheduled else 0, scheduled_task_id
-                ])
-                logger.info(f"成功插入AI标题 (snake_case): {headline_id}")
-            except Exception as e_snake:
-                # 尝试 camelCase (用于 inspilot 等老版 D1)
-                try:
-                    self.d1.execute("""
-                        INSERT INTO ai_headlines 
-                        (id, userId, title, content, articleCount, prompt, feedIds, slides, createdAt, isScheduled, scheduledTaskId)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, [
-                        headline_id, user_id, title, content, article_count, 
-                        prompt or '', feed_ids or '', slides_json, created_at,
-                        1 if is_scheduled else 0, scheduled_task_id
-                    ])
-                    logger.info(f"成功插入AI标题 (camelCase): {headline_id}")
-                except Exception as e_camel:
-                    logger.error(f"插入AI标题失败 (尝试了 snake_case 和 camelCase): {e_snake} | {e_camel}")
-                    raise
+            self.d1.execute("""
+                INSERT INTO ai_headlines 
+                (id, user_id, title, content, article_count, prompt, feed_ids, slides, created_at, is_scheduled, scheduled_task_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                headline_id, user_id, title, content, article_count, 
+                prompt or '', feed_ids or '', slides_json, created_at,
+                1 if is_scheduled else 0, scheduled_task_id
+            ])
+            logger.info(f"成功插入AI标题: {headline_id}")
             
             return headline_id
             
@@ -122,7 +104,7 @@ class HeadlineManager:
         """
         try:
             headlines = self.d1.fetch_all(
-                "SELECT * FROM ai_headlines WHERE userId = ? ORDER BY createdAt DESC LIMIT ?",
+                "SELECT * FROM ai_headlines WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
                 [user_id, limit]
             )
             
@@ -144,7 +126,7 @@ class HeadlineManager:
         """获取最近的标题"""
         try:
             headlines = self.d1.fetch_all(
-                "SELECT * FROM ai_headlines ORDER BY createdAt DESC LIMIT ?",
+                "SELECT * FROM ai_headlines ORDER BY created_at DESC LIMIT ?",
                 [limit]
             )
             
@@ -229,9 +211,9 @@ class HeadlineManager:
             标题列表
         """
         try:
-            # 使用 LIKE 查询，因为 feedIds 是逗号分隔的字符串
+            # 使用 LIKE 查询，因为 feed_ids 是逗号分隔的字符串
             headlines = self.d1.fetch_all(
-                "SELECT * FROM ai_headlines WHERE feedIds LIKE ? ORDER BY createdAt DESC LIMIT ?",
+                "SELECT * FROM ai_headlines WHERE feed_ids LIKE ? ORDER BY created_at DESC LIMIT ?",
                 [f"%{feed_ids}%", limit]
             )
             
@@ -262,12 +244,12 @@ class HeadlineManager:
         try:
             if user_id:
                 total = self.d1.fetch_one(
-                    "SELECT COUNT(*) as count, SUM(articleCount) as total_articles FROM ai_headlines WHERE userId = ?",
+                    "SELECT COUNT(*) as count, SUM(article_count) as total_articles FROM ai_headlines WHERE user_id = ?",
                     [user_id]
                 )
             else:
                 total = self.d1.fetch_one(
-                    "SELECT COUNT(*) as count, SUM(articleCount) as total_articles FROM ai_headlines"
+                    "SELECT COUNT(*) as count, SUM(article_count) as total_articles FROM ai_headlines"
                 )
             
             stats = {
