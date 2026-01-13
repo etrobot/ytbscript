@@ -10,6 +10,10 @@ from execute_d1_task import execute_task
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# 禁用APScheduler的冗余日志
+logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
+logging.getLogger('apscheduler.scheduler').setLevel(logging.WARNING)
+
 class TaskScheduler:
     def __init__(self):
         self.task_manager = get_task_manager()
@@ -59,25 +63,40 @@ class TaskScheduler:
         target_hour = (current_hour_utc + 1) % 24
         target_minute = current_minute_utc
         
+        logger.info(f"检查调度: 当前时间 {current_hour_utc:02d}:{current_minute_utc:02d} UTC, 寻找 scheduled_hour={target_hour}, scheduled_minute={target_minute} 的任务")
+        
         try:
             tasks = self.task_manager.get_active_tasks()
+            if not tasks:
+                logger.info("未找到活跃任务")
+                return
+            
             for task in tasks:
                 sh = task.get('scheduled_hour') or task.get('scheduledHour')
                 sm = task.get('scheduled_minute') if task.get('scheduled_minute') is not None else task.get('scheduledMinute', 0)
                 last_exec = task.get('last_executed_at') or task.get('lastExecutedAt')
                 
+                task_id_short = task['id'][:8]
+                logger.info(f"检查任务 {task_id_short}...: scheduled_hour={sh}, scheduled_minute={sm}, 触发时间={(sh-1)%24:02d}:{sm:02d}")
+                
                 if sh == target_hour and sm == target_minute:
                     # 避免一分钟内重复触发
                     should_run = True
                     if last_exec:
+                        time_since_last = int(time.time() * 1000) - last_exec
                         # 检查是否在 60 秒内运行过
-                        if (int(time.time() * 1000) - last_exec) < 60000:
+                        if time_since_last < 60000:
                             should_run = False
+                            logger.info(f"任务 {task_id_short}... 跳过: {time_since_last/1000:.0f}秒前刚执行过")
                     
                     if should_run:
-                        logger.info(f"触达计划时间 (早一小时执行): 任务 {task['id']} (设定 {sh:02d}:{sm:02d} UTC)")
+                        logger.info(f"✓✓✓ 触达计划时间! 启动任务 {task['id']} (设定 {sh:02d}:{sm:02d} UTC)")
                         # 异步启动任务，不阻塞调度循环
                         asyncio.create_task(self.run_task(task, original_scheduled_time=(sh, sm)))
+                    else:
+                        logger.info(f"任务 {task_id_short}... 匹配但不执行（防重复）")
+                else:
+                    logger.debug(f"任务 {task_id_short}... 不匹配当前时间")
         except Exception as e:
             logger.error(f"检查调度异常: {e}")
 
