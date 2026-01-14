@@ -102,20 +102,12 @@ class CookieKeepAliveService:
         Returns:
             (cookie_name, cookie_path) 或 None
         """
-        # 优先使用 cookies.txt
         default_cookie = self.cookie_dir / "cookies.txt"
         if default_cookie.exists():
             cookie_name = "cookies.txt"
             if cookie_name not in self.metadata:
                 self.register_cookie(cookie_name, default_cookie)
             return (cookie_name, default_cookie)
-        
-        # 否则使用第一个找到的cookie文件
-        for cookie_file in self.cookie_dir.glob("*.txt"):
-            cookie_name = cookie_file.name
-            if cookie_name not in self.metadata:
-                self.register_cookie(cookie_name, cookie_file)
-            return (cookie_name, cookie_file)
         
         return None
     
@@ -195,10 +187,43 @@ class CookieKeepAliveService:
                     )
                     logger.debug(f"✅ 频道保活成功: {channel_name}")
                     return True
+                else:
+                    logger.debug("没有找到频道，尝试随机视频保活")
             except Exception as ce:
-                logger.warning(f"通过频道保活失败，尝试通用保活: {str(ce)}")
+                logger.warning(f"通过频道保活失败，尝试随机视频保活: {str(ce)}")
 
-            # 如果没有频道或频道更新失败，执行通用保活
+            # 如果没有频道或频道更新失败，尝试随机选择视频更新字幕进行保活
+            try:
+                from youtube_channel_processor import get_processor
+                processor = get_processor()
+                video = processor.get_random_video_for_subtitle_update()
+                
+                if video:
+                    video_id = video['video_id']
+                    video_title = video['title'][:50]  # 限制标题长度
+                    video_url = video['url']
+                    logger.debug(f"🔄 使用随机视频进行保活: {video_title} ({video_id})")
+                    
+                    # 提取视频字幕作为保活手段
+                    subtitles_data = processor.extract_video_subtitles(
+                        video_id=video_id,
+                        video_url=video_url,
+                        subtitle_lang='zh-Hans',  # 默认中文字幕
+                        cookie_file=cookie_path
+                    )
+                    
+                    if subtitles_data:
+                        processor.save_subtitles(subtitles_data, video_id)
+                        logger.debug(f"✅ 随机视频保活成功: {video_title}")
+                        return True
+                    else:
+                        logger.debug(f"随机视频无字幕，尝试通用保活")
+                else:
+                    logger.debug("没有找到视频，尝试通用保活")
+            except Exception as ve:
+                logger.warning(f"通过随机视频保活失败，尝试通用保活: {str(ve)}")
+
+            # 如果频道和视频更新都失败，执行通用保活
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,

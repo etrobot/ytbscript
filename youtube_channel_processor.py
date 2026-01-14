@@ -569,6 +569,44 @@ class YouTubeChannelProcessor:
                 return dict(row)
             return None
 
+    def get_random_video_for_subtitle_update(self) -> Optional[Dict]:
+        """
+        获取一个随机视频用于字幕更新（优先选择没有字幕的视频）
+        
+        Returns:
+            视频信息字典，如果不存在则返回None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # 优先选择没有字幕的视频，如果都有字幕则随机选择一个
+            cursor.execute('''
+                SELECT video_id, title, url, channel_id, subtitle_extracted
+                FROM videos
+                WHERE subtitle_extracted = 0 OR subtitle_extracted IS NULL
+                ORDER BY RANDOM()
+                LIMIT 1
+            ''')
+            
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            
+            # 如果所有视频都有字幕，则随机选择一个视频重新更新字幕
+            cursor.execute('''
+                SELECT video_id, title, url, channel_id, subtitle_extracted
+                FROM videos
+                ORDER BY RANDOM()
+                LIMIT 1
+            ''')
+            
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            
+            return None
+
 
 # 全局处理器实例，供FastAPI使用
 _processor_instance = None
