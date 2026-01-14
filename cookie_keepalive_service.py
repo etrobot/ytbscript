@@ -132,6 +132,8 @@ class CookieKeepAliveService:
                 'extract_flat': True,
                 'cookiefile': str(cookie_path),
                 'socket_timeout': 30,
+                # 保持 UA 一致，防止风控
+                'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             }
             
             test_url = "https://www.youtube.com/"
@@ -183,13 +185,18 @@ class CookieKeepAliveService:
                     
                     # 使用频道更新作为保活手段
                     # 限制每次保活只检查5个视频，避免耗时太长
-                    await processor.process_channel_batch(
+                    result = await processor.process_channel_batch(
                         channel_url=channel_url,
                         max_videos=5,
                         cookie_file=cookie_path
                     )
-                    logger.debug(f"✅ 频道保活成功: {channel_name}")
-                    return True
+                    
+                    # 关键修改：只有真正发生下载才算完全保活成功
+                    if result.get('downloaded_count', 0) > 0:
+                        logger.debug(f"✅ 频道保活成功 (新下载: {result.get('downloaded_count')})")
+                        return True
+                    else:
+                        logger.debug(f"频道保活完成但无新下载，尝试进一步随机视频保活以增强活跃度")
                 else:
                     logger.debug("没有找到频道，尝试随机视频保活")
             except Exception as ce:
@@ -234,6 +241,8 @@ class CookieKeepAliveService:
                 'cookiefile': str(cookie_path),
                 'socket_timeout': 30,
                 'playlist_items': '1',
+                # 保持 UA 一致，防止风控
+                'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             }
             
             url = self.keepalive_urls[int(time.time()) % len(self.keepalive_urls)]

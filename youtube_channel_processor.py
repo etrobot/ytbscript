@@ -138,6 +138,8 @@ class YouTubeChannelProcessor:
                     'skip': ['authcheck']
                 }
             },
+            # 模拟现代浏览器 UA，配合 Cookie 使用效果更好
+            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
         # 处理Cookie
@@ -311,6 +313,8 @@ class YouTubeChannelProcessor:
             'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
+            # 保持 UA 一致，防止风控
+            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
         # 处理Cookie
@@ -423,8 +427,11 @@ class YouTubeChannelProcessor:
             self.save_channel_and_videos(channel_info, videos)
             
             # 3. 串行处理每个视频的字幕提取
+            # 3. 串行处理每个视频的字幕提取
             success_count = 0
             failed_count = 0
+            skipped_count = 0
+            downloaded_count = 0
             
             logger.info(f"开始串行处理 {len(videos)} 个视频的字幕...")
             
@@ -441,6 +448,7 @@ class YouTubeChannelProcessor:
                     if result and result[0]:
                         logger.info(f"视频 {video['video_id']} 字幕已存在，跳过")
                         success_count += 1
+                        skipped_count += 1
                         continue
                 
                 # 提取字幕
@@ -455,6 +463,7 @@ class YouTubeChannelProcessor:
                 if subtitles_data:
                     self.save_subtitles(subtitles_data, video['video_id'])
                     success_count += 1
+                    downloaded_count += 1
                 else:
                     failed_count += 1
                 
@@ -470,11 +479,13 @@ class YouTubeChannelProcessor:
                 'total_videos': len(videos),
                 'success_count': success_count,
                 'failed_count': failed_count,
+                'skipped_count': skipped_count,
+                'downloaded_count': downloaded_count,
                 'duration_seconds': duration,
                 'processed_at': end_time.isoformat()
             }
             
-            logger.info(f"批量处理完成: 成功 {success_count}, 失败 {failed_count}, 耗时 {duration:.1f}秒")
+            logger.info(f"批量处理完成: 成功 {success_count} (下载: {downloaded_count}, 跳过: {skipped_count}), 失败 {failed_count}, 耗时 {duration:.1f}秒")
             return result
             
         except Exception as e:
