@@ -14,11 +14,15 @@ import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+import sqlite3
 from typing import Optional, Dict
-import yt_dlp
-from threading import Lock
 
 logger = logging.getLogger(__name__)
+
+# 获取数据库路径 (假设和 channel processor 用的是同一个库)
+# 注意：这里我们可能需要引用全局配置或假设默认位置
+BASE_DIR = Path(__file__).parent.absolute()
+DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "youtube_channels.db")))
 
 
 class CookieKeepAliveService:
@@ -268,6 +272,42 @@ class CookieKeepAliveService:
             logger.error(f"保活操作最终失败: {str(e)}")
             return False
     
+    def should_skip_keepalive(self) -> bool:
+        """
+        检查未来 10 分钟内是否有计划任务，如果有则跳过保活，避免 429
+        """
+        try:
+            current_time = datetime.now()
+            # 检查接下来 10 分钟
+            check_times = [current_time + timedelta(minutes=i) for i in range(11)]
+            
+            # 将这些时间点转换为 (hour, minute) 对
+            target_slots = set((t.hour, t.minute) for t in check_times)
+            
+            if not DB_PATH.exists():
+                return False
+
+            with sqlite3.connect(str(DB_PATH)) as conn:
+                cursor = conn.cursor()
+                # 检查 d1_tasks 表是否存在
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='d1_tasks'")
+                if not cursor.fetchone():
+                    return False
+                
+                # 查询所有活跃任务的计划时间
+                cursor.execute("SELECT scheduled_hour, scheduled_minute FROM d1_tasks WHERE is_active = 1")
+                tasks = cursor.fetchall()
+                
+                for hour, minute in tasks:
+                    if (hour, minute) in target_slots:
+                        logger.info(f"⏭️  检测到活跃任务即将在 {hour:02d}:{minute:02d} 执行，跳过本次保活以节省配额")
+                        return True
+                        
+            return False
+        except Exception as e:
+            logger.warning(f"检查即将到来的任务失败: {e}，将继续执行保活")
+            return False
+
     def pause(self):
         """暂停保活（有任务运行时调用）"""
         with self.lock:
@@ -307,6 +347,12 @@ class CookieKeepAliveService:
                 
                 cookie_name, cookie_path = cookie_info
                 
+                # 智能避让：如果近期有任务，跳过
+                if self.should_skip_keepalive():
+                    # 即使跳过，也稍微等待一下再检查（比如等待 check_interval的一半），或者直接等下一个周期
+                    await asyncio.sleep(self.check_interval)
+                    continue
+
                 # 执行保活操作
                 logger.debug(f"🔄 执行cookie保活: {cookie_name}")
                 success = await self.perform_keepalive(cookie_path)
