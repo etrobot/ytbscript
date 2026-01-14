@@ -43,8 +43,7 @@ class YouTubeChannelProcessor:
             # 创建频道表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS channels (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    channel_id TEXT UNIQUE NOT NULL,
+                    channel_id TEXT PRIMARY KEY,
                     channel_name TEXT NOT NULL,
                     channel_url TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -55,8 +54,7 @@ class YouTubeChannelProcessor:
             # 创建视频表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS videos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    video_id TEXT UNIQUE NOT NULL,
+                    video_id TEXT PRIMARY KEY,
                     channel_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     url TEXT NOT NULL,
@@ -75,8 +73,7 @@ class YouTubeChannelProcessor:
             # 创建 RSS Feed 表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rss_feeds (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    url TEXT UNIQUE NOT NULL,
+                    url TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     last_fetched TIMESTAMP
                 )
@@ -85,10 +82,9 @@ class YouTubeChannelProcessor:
             # 创建 RSS 文章表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rss_articles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT PRIMARY KEY,
                     feed_url TEXT NOT NULL,
                     title TEXT NOT NULL,
-                    url TEXT UNIQUE NOT NULL,
                     summary TEXT,
                     content TEXT,
                     published_at TIMESTAMP,
@@ -515,7 +511,7 @@ class YouTubeChannelProcessor:
                         c.channel_name,
                         c.channel_url,
                         c.last_processed,
-                        COUNT(v.id) as total_videos,
+                        COUNT(v.video_id) as total_videos,
                         SUM(CASE WHEN v.subtitle_extracted THEN 1 ELSE 0 END) as videos_with_subtitles
                     FROM channels c
                     LEFT JOIN videos v ON c.channel_id = v.channel_id
@@ -539,7 +535,7 @@ class YouTubeChannelProcessor:
                 cursor.execute('''
                     SELECT 
                         COUNT(DISTINCT c.channel_id) as total_channels,
-                        COUNT(v.id) as total_videos,
+                        COUNT(v.video_id) as total_videos,
                         SUM(CASE WHEN v.subtitle_extracted THEN 1 ELSE 0 END) as videos_with_subtitles
                     FROM channels c
                     LEFT JOIN videos v ON c.channel_id = v.channel_id
