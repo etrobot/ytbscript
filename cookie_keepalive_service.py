@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
 from typing import Optional, Dict
+import yt_dlp
+from threading import Lock
 
 logger = logging.getLogger(__name__)
 
