@@ -417,6 +417,13 @@ async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(ve
         with open(cookie_path, 'w', encoding='utf-8') as f:
             f.write(netscape_content)
         
+        logger.info(f"✅ Cookie已保存: {cookie_path}")
+        logger.info(f"📂 Cookie目录: {COOKIE_DIR}")
+        
+        # 列出所有cookie文件
+        cookie_files = list(COOKIE_DIR.glob("*.txt"))
+        logger.info(f"🍪 当前cookie文件: {[f.name for f in cookie_files]}")
+        
         # 注册cookie到保活服务
         try:
             keepalive = get_keepalive_service(COOKIE_DIR)
@@ -425,7 +432,9 @@ async def save_cookie(request: SaveCookieRequest, token_valid: bool = Depends(ve
             # 如果保活服务未运行，启动它
             if not keepalive.running:
                 keepalive.start()
-                logger.info("Cookie保活服务已启动")
+                logger.info("🚀 Cookie保活服务已启动")
+            else:
+                logger.info("ℹ️ Cookie保活服务已在运行")
             
             return {
                 "status": "success",

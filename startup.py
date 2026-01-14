@@ -38,8 +38,32 @@ async def initialize_database():
     """初始化数据库"""
     try:
         from youtube_channel_processor import get_processor
+        import os
+        
         processor = get_processor()
-        logger.info("✅ YouTube频道处理器已初始化")
+        db_path = processor.db_path
+        
+        # 检查数据库文件和持久化
+        logger.info(f"📁 数据库路径: {db_path}")
+        
+        if os.path.exists(db_path):
+            db_size = os.path.getsize(db_path)
+            logger.info(f"✅ 数据库已存在 (大小: {db_size / 1024:.2f} KB)")
+            
+            # 统计数据
+            with processor.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM channels")
+                channel_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM videos")
+                video_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM videos WHERE upload_date >= date('now', '-30 days')")
+                recent_count = cursor.fetchone()[0]
+                
+                logger.info(f"📊 数据统计: {channel_count} 个频道, {video_count} 个视频 (最近30天: {recent_count})")
+        else:
+            logger.info(f"✅ 创建新数据库")
+        
         logger.info("✅ 数据库表已创建")
         return processor
     except Exception as e:

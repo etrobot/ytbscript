@@ -33,6 +33,10 @@ class CookieKeepAliveService:
         """
         self.cookie_dir = cookie_dir
         self.check_interval = check_interval
+        
+        # 确保cookie目录存在
+        self.cookie_dir.mkdir(parents=True, exist_ok=True)
+        
         self.metadata_file = cookie_dir / "cookie_metadata.json"
         self.running = False
         self.paused = False
