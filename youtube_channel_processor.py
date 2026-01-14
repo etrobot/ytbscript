@@ -133,11 +133,9 @@ class YouTubeChannelProcessor:
             'quiet': True,
             'no_warnings': True,
             'playlistend': max_videos,
-            'extractor_args': {
-                'youtubetab': {
-                    'skip': ['authcheck']
-                }
-            },
+            'ignoreerrors': True,  # 遇到单个视频错误不中断
+            'sleep_interval': 2,   # 请求间隔，防止429
+            'max_sleep_interval': 5,
             # 模拟现代浏览器 UA，配合 Cookie 使用效果更好
             'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }

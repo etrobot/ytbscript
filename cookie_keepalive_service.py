@@ -280,8 +280,8 @@ class CookieKeepAliveService:
         """
         try:
             current_time = datetime.now()
-            # 检查接下来 10 分钟
-            check_times = [current_time + timedelta(minutes=i) for i in range(11)]
+            # 检查接下来 20 分钟
+            check_times = [current_time + timedelta(minutes=i) for i in range(21)]
             
             # 将这些时间点转换为 (hour, minute) 对
             target_slots = set((t.hour, t.minute) for t in check_times)
