@@ -72,7 +72,7 @@ async def fetch_missing_subtitles(processor, channel_ids: List[str]):
     
     logger.info(f"检查 {len(channel_ids)} 个频道的字幕数据...")
     
-    cookie_dir = Path(__file__).parent / "cookies"
+    cookie_dir = Path(os.getenv("COOKIES_DIR", str(Path(__file__).parent / "cookies")))
     keepalive_service = get_keepalive_service(cookie_dir=cookie_dir)
     fetched_count = 0
     

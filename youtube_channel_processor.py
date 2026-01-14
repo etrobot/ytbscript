@@ -150,14 +150,13 @@ class YouTubeChannelProcessor:
             temp_cookie_file = save_cookie_string_as_netscape(cookie_string)
             ydl_opts['cookiefile'] = str(temp_cookie_file)
             logger.info("使用传入的Cookie字符串（已转换为Netscape格式）")
-        else:
             # 使用默认的cookie文件
-            default_cookie = COOKIE_DIR / "cookies.txt"
+            default_cookie = (COOKIE_DIR / "cookies.txt").absolute()
             if default_cookie.exists():
                 ydl_opts['cookiefile'] = str(default_cookie)
-                logger.info("使用默认Cookie文件: cookies.txt")
+                logger.info(f"使用默认Cookie文件: {default_cookie}")
             else:
-                logger.warning("未找到默认 cookies.txt，可能会遇到访问限制")
+                logger.warning(f"未找到默认 cookies.txt (预期路径: {default_cookie})，可能会遇到访问限制")
         
         def _flatten_entries(entries):
             """展开嵌套的 playlist，确保获取真实视频条目"""

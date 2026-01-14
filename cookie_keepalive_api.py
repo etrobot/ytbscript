@@ -33,9 +33,15 @@ async def verify_any_token(
 
 
 def _get_cookie_dir() -> Path:
-    base_dir = Path(__file__).parent.absolute()
-    cookie_dir = base_dir / "cookies"
-    cookie_dir.mkdir(exist_ok=True)
+    # 优先从环境变量获取 COOKIES_DIR
+    env_cookies_dir = os.getenv("COOKIES_DIR")
+    if env_cookies_dir:
+        cookie_dir = Path(env_cookies_dir).absolute()
+    else:
+        base_dir = Path(__file__).parent.absolute()
+        cookie_dir = base_dir / "cookies"
+    
+    cookie_dir.mkdir(parents=True, exist_ok=True)
     return cookie_dir
 
 

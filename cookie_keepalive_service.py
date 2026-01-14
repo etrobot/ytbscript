@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict
@@ -31,11 +32,13 @@ class CookieKeepAliveService:
             cookie_dir: Cookie目录路径
             check_interval: 保活检查间隔（秒），默认5分钟
         """
-        self.cookie_dir = cookie_dir
+        self.cookie_dir = cookie_dir.absolute()
         self.check_interval = check_interval
         
         # 确保cookie目录存在
         self.cookie_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"🍪 Cookie保活服务初始化，使用目录: {self.cookie_dir}")
         
         self.metadata_file = cookie_dir / "cookie_metadata.json"
         self.running = False
@@ -401,7 +404,14 @@ def get_keepalive_service(cookie_dir: Path = None, check_interval: int = 300) ->
     
     if _keepalive_service is None:
         if cookie_dir is None:
-            raise ValueError("首次调用需要提供cookie_dir参数")
+            # 自动探测路径逻辑，与项目其他模块保持一致
+            env_cookies_dir = os.getenv("COOKIES_DIR")
+            if env_cookies_dir:
+                cookie_dir = Path(env_cookies_dir)
+            else:
+                # 默认回退到当前文件所在目录下的 cookies 文件夹
+                cookie_dir = Path(__file__).parent.absolute() / "cookies"
+                
         _keepalive_service = CookieKeepAliveService(cookie_dir, check_interval)
     
     return _keepalive_service
