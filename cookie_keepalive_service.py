@@ -218,7 +218,7 @@ class CookieKeepAliveService:
                     subtitles_data = processor.extract_video_subtitles(
                         video_id=video_id,
                         video_url=video_url,
-                        subtitle_lang='zh-Hans',  # 默认中文字幕
+                        subtitle_lang='en',  # 为了保活成功率，使用最常见的英文
                         cookie_file=cookie_path
                     )
                     
