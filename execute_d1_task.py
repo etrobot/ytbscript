@@ -26,43 +26,108 @@ from headline_manager import get_headline_manager
 from youtube_channel_processor import get_processor
 from d1_client import D1Client
 
-def resolve_feed_urls_to_channel_ids(feed_urls: List[str]) -> Dict[str, Dict[str, str]]:
-    """解析 feed URL 列表到 YouTube 频道 ID 或 RSS Feed"""
+def resolve_feeds_from_d1(feed_ids: List[str] = None, feed_urls: List[str] = None) -> Dict[str, Dict[str, Any]]:
+    """从 D1 feeds 表查询并解析，同步到本地数据库 (upsert)"""
     result = {}
-    for url in feed_urls:
-        try:
-            # 1. YouTube 频道
-            match = re.search(r'channel_id=([A-Za-z0-9_-]+)', url)
-            if match:
-                channel_id = match.group(1)
-                result[url] = {"channel_id": channel_id, "name": channel_id, "url": url, "type": "youtube"}
-                continue
-            if 'youtube.com/@' in url:
-                name = url.split('@')[-1].split('/')[0]
-                result[url] = {"channel_id": f"@{name}", "name": f"@{name}", "url": url, "type": "youtube"}
-                continue
-            elif 'youtube.com/channel/' in url:
-                channel_id = url.split('channel/')[-1].split('/')[0]
-                result[url] = {"channel_id": channel_id, "name": channel_id, "url": url, "type": "youtube"}
-                continue
+    d1 = D1Client()
+    processor = get_processor()
+    
+    query_parts = []
+    params = []
+    
+    if feed_ids:
+        # 过滤掉空值
+        valid_ids = [fid for fid in feed_ids if fid]
+        if valid_ids:
+            placeholders = ",".join(["?"] * len(valid_ids))
+            query_parts.append(f"id IN ({placeholders})")
+            params.extend(valid_ids)
             
-            # 2. RSS Feed (默认除 YouTube 外均为 RSS)
-            result[url] = {"feed_id": None, "name": url, "url": url, "type": "rss"}
-        except Exception as e:
-            logger.error(f"解析 URL {url} 失败: {e}")
-    return result
-
-def resolve_feed_ids_to_channel_ids(feed_ids: List[str]) -> Dict[str, Dict[str, str]]:
-    """从 feed ID 列表解析 (主要处理 UC 开头的 YouTube 频道 ID)"""
-    result = {}
-    for feed_id in feed_ids:
-        try:
-            if feed_id.startswith('UC') and len(feed_id) == 24:
-                result[feed_id] = {"channel_id": feed_id, "name": feed_id, "url": f"https://www.youtube.com/channel/{feed_id}", "type": "youtube"}
-                continue
-            # 不再从 D1 feeds 表查询 RSS，如果没有明确 URL，RSS 需要通过 resolve_feed_urls_to_channel_ids
-        except Exception as e:
-            logger.error(f"解析 feed {feed_id} 失败: {e}")
+    if feed_urls:
+        valid_urls = [url for url in feed_urls if url]
+        if valid_urls:
+            placeholders = ",".join(["?"] * len(valid_urls))
+            query_parts.append(f"url IN ({placeholders})")
+            params.extend(valid_urls)
+            
+    if not query_parts:
+        return {}
+        
+    sql = f"SELECT id, name, url FROM feeds WHERE {' OR '.join(query_parts)}"
+    
+    try:
+        rows = d1.fetch_all(sql, params)
+        logger.info(f"从 D1 feeds 表查询到 {len(rows)} 条记录进行同步")
+        
+        with processor.get_db_connection() as conn:
+            # 开启事务
+            cursor = conn.cursor()
+            for row in rows:
+                fid = row['id']
+                name = row['name']
+                url = row['url']
+                
+                # 判断是 YouTube 还是 RSS
+                is_youtube = False
+                channel_id = None
+                
+                # YouTube 判定逻辑: url 匹配或 id 为 UC 开头
+                if 'youtube.com' in url or (isinstance(fid, str) and fid.startswith('UC')):
+                    is_youtube = True
+                    # 尝试从 URL 提取 channel_id (支持 XML feed URL 或标准 URL)
+                    match = re.search(r'channel_id=([A-Za-z0-9_-]+)', url)
+                    if match:
+                        channel_id = match.group(1)
+                    elif 'youtube.com/channel/' in url:
+                        channel_id = url.split('channel/')[-1].split('/')[0]
+                    elif isinstance(fid, str) and fid.startswith('UC') and len(fid) == 24:
+                        channel_id = fid
+                    else:
+                        channel_id = fid # 可能是 @username 或其他
+                
+                if is_youtube:
+                    # 标准化频道 URL
+                    real_channel_url = f"https://www.youtube.com/channel/{channel_id}" if channel_id and channel_id.startswith('UC') else url
+                    
+                    # 本地 Upsert 频道
+                    cursor.execute('''
+                        INSERT INTO channels (channel_id, channel_name, channel_url)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(channel_id) DO UPDATE SET
+                            channel_name = excluded.channel_name,
+                            channel_url = excluded.channel_url
+                    ''', (channel_id or fid, name, real_channel_url))
+                    
+                    item = {
+                        "channel_id": channel_id or fid,
+                        "name": name,
+                        "url": real_channel_url,
+                        "type": "youtube"
+                    }
+                    result[fid] = item
+                    result[url] = item
+                else:
+                    # 本地 Upsert RSS Feed
+                    cursor.execute('''
+                        INSERT INTO rss_feeds (url, name)
+                        VALUES (?, ?)
+                        ON CONFLICT(url) DO UPDATE SET
+                            name = excluded.name
+                    ''', (url, name))
+                    
+                    item = {
+                        "feed_id": fid,
+                        "name": name,
+                        "url": url,
+                        "type": "rss"
+                    }
+                    result[fid] = item
+                    result[url] = item
+            conn.commit()
+            
+    except Exception as e:
+        logger.error(f"从 D1 解析并同步 feeds 失败: {e}", exc_info=True)
+        
     return result
 
 async def fetch_missing_subtitles(processor, channel_ids: List[str]):
@@ -134,20 +199,19 @@ async def execute_task(task_id: str, scheduled_timestamp: int = None):
             'feed_urls': task_raw.get('feed_urls') or task_raw.get('feedUrls'),
         }
 
-        # 1. 解析 Feed
-        feed_mapping = {}
+        # 1. 解析 Feed (从 D1 获取并同步到本地)
         feed_urls_raw = task.get('feed_urls')
+        urls = []
         if feed_urls_raw:
             urls = json.loads(feed_urls_raw) if isinstance(feed_urls_raw, str) and feed_urls_raw.startswith('[') else ([u.strip() for u in feed_urls_raw.split(',')] if isinstance(feed_urls_raw, str) else feed_urls_raw)
-            feed_mapping = resolve_feed_urls_to_channel_ids(urls)
         
-        if not feed_mapping:
-            ids_raw = task.get('feed_ids') or ''
-            ids = json.loads(ids_raw) if isinstance(ids_raw, str) and ids_raw.startswith('[') else ([i.strip() for i in ids_raw.split(',')] if isinstance(ids_raw, str) else ids_raw)
-            feed_mapping = resolve_feed_ids_to_channel_ids(ids)
+        ids_raw = task.get('feed_ids') or ''
+        ids = json.loads(ids_raw) if isinstance(ids_raw, str) and ids_raw.startswith('[') else ([i.strip() for i in ids_raw.split(',')] if isinstance(ids_raw, str) else ids_raw)
+        
+        feed_mapping = resolve_feeds_from_d1(ids, urls)
 
         if not feed_mapping:
-            logger.error("无法解析 feed 信息"); return
+            logger.error("无法解析 feed 信息或 D1 中不存在相关 feeds"); return
 
         youtube_channel_ids = [i['channel_id'] for i in feed_mapping.values() if i.get('type') == 'youtube' or 'channel_id' in i]
         rss_feeds = [i for i in feed_mapping.values() if i.get('type') == 'rss']
