@@ -26,7 +26,7 @@ from headline_manager import get_headline_manager
 from youtube_channel_processor import get_processor
 from d1_client import D1Client
 
-def resolve_feeds_from_d1(feed_ids: List[str] = None, feed_urls: List[str] = None) -> Dict[str, Dict[str, Any]]:
+def resolve_feeds_from_d1(feed_ids: List[str] = None, feed_urls: List[str] = None, sync_all_active: bool = False) -> Dict[str, Dict[str, Any]]:
     """从 D1 feeds 表查询并解析，同步到本地数据库 (upsert)"""
     result = {}
     d1 = D1Client()
@@ -35,29 +35,32 @@ def resolve_feeds_from_d1(feed_ids: List[str] = None, feed_urls: List[str] = Non
     query_parts = []
     params = []
     
-    if feed_ids:
-        # 过滤掉空值
-        valid_ids = [fid for fid in feed_ids if fid]
-        if valid_ids:
-            placeholders = ",".join(["?"] * len(valid_ids))
-            query_parts.append(f"id IN ({placeholders})")
-            params.extend(valid_ids)
-            
-    if feed_urls:
-        valid_urls = [url for url in feed_urls if url]
-        if valid_urls:
-            placeholders = ",".join(["?"] * len(valid_urls))
-            query_parts.append(f"url IN ({placeholders})")
-            params.extend(valid_urls)
+    if sync_all_active:
+        query_parts.append("is_active = 1")
+    else:
+        if feed_ids:
+            valid_ids = [fid for fid in feed_ids if fid]
+            if valid_ids:
+                placeholders = ",".join(["?"] * len(valid_ids))
+                query_parts.append(f"id IN ({placeholders})")
+                params.extend(valid_ids)
+                
+        if feed_urls:
+            valid_urls = [url for url in feed_urls if url]
+            if valid_urls:
+                placeholders = ",".join(["?"] * len(valid_urls))
+                query_parts.append(f"url IN ({placeholders})")
+                params.extend(valid_urls)
             
     if not query_parts:
         return {}
         
-    sql = f"SELECT id, name, url FROM feeds WHERE {' OR '.join(query_parts)}"
+    sql = f"SELECT id, name, url FROM feeds WHERE {' OR '.join(query_parts) if not sync_all_active else query_parts[0]}"
     
     try:
         rows = d1.fetch_all(sql, params)
-        logger.info(f"从 D1 feeds 表查询到 {len(rows)} 条记录进行同步")
+        if rows:
+            logger.info(f"从 D1 feeds 表同步了 {len(rows)} 条频道信息到本地")
         
         with processor.get_db_connection() as conn:
             # 开启事务
@@ -144,15 +147,18 @@ async def fetch_missing_subtitles(processor, channel_ids: List[str]):
     with processor.get_db_connection() as conn:
         cursor = conn.cursor()
         for channel_id in channel_ids:
-            cursor.execute("SELECT c.channel_id, c.channel_name, SUM(CASE WHEN v.subtitle_extracted = 1 THEN 1 ELSE 0 END) as subtitle_count FROM channels c LEFT JOIN videos v ON c.channel_id = v.channel_id WHERE c.channel_id = ? GROUP BY c.channel_id", (channel_id,))
+            cursor.execute("""
+                SELECT c.channel_id, c.channel_name, 
+                       SUM(CASE WHEN v.subtitle_extracted = 1 THEN 1 ELSE 0 END) as subtitle_count 
+                FROM channels c 
+                LEFT JOIN videos v ON c.channel_id = v.channel_id 
+                WHERE c.channel_id = ? 
+                GROUP BY c.channel_id
+            """, (channel_id,))
             row = cursor.fetchone()
             
-            if not row:
-                logger.info(f"  频道 {channel_id[:8]}... 不在数据库中，开始抓取...")
-                subtitle_count = 0
-            else:
-                subtitle_count = row[2] or 0
-                logger.info(f"  频道 {channel_id[:8]}... ({row[1]}) 已有 {subtitle_count} 个字幕")
+            # 恢复逻辑：仅当本地无数据时才抓取
+            subtitle_count = row[2] if row and row[2] else 0
             
             if not row or subtitle_count == 0:
                 cookie_info = keepalive_service.get_active_cookie()
@@ -161,7 +167,7 @@ async def fetch_missing_subtitles(processor, channel_ids: List[str]):
                     continue
                     
                 _, cookie_path = cookie_info
-                logger.info(f"  开始抓取频道 {channel_id[:8]}... (max 5 videos)...")
+                logger.info(f"  频道 {channel_id[:8]}... 无本地数据，开始抓取 (max 5 videos)...")
                 
                 try:
                     result = await processor.process_channel_batch(
@@ -173,6 +179,8 @@ async def fetch_missing_subtitles(processor, channel_ids: List[str]):
                     logger.info(f"  ✓ 频道 {channel_id[:8]}... 抓取完成")
                 except Exception as e:
                     logger.error(f"  ✗ 频道 {channel_id[:8]}... 抓取失败: {e}")
+            else:
+                logger.info(f"  频道 {channel_id[:8]}... ({row[1]}) 已有数据，跳过抓取")
     
     if fetched_count > 0:
         logger.info(f"字幕抓取完成: {fetched_count}/{len(channel_ids)} 个频道")

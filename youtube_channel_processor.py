@@ -550,28 +550,45 @@ class YouTubeChannelProcessor:
 
     def get_oldest_channel(self) -> Optional[Dict]:
         """
-        获取更新时间最早（最后一次处理时间最久）的一个频道
+        获取更新时间最早的一个频道（优先返回无数据的）
+        """
+        channels = self.get_channels_without_subtitles(limit=1)
+        if not channels:
+            # 如果都有数据了，则按最后处理时间排序
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute('SELECT channel_id, channel_name, channel_url FROM channels ORDER BY last_processed ASC NULLS FIRST LIMIT 1')
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        return channels[0]
+
+    def get_channels_without_subtitles(self, limit: int = 10) -> List[Dict]:
+        """
+        获取本地没有任何字幕数据的频道列表（即新添加但从未成功抓取的频道）
         
+        Args:
+            limit: 返回数量限制
+            
         Returns:
-            频道信息字典，如果不存在则返回None
+            频道信息字典列表
         """
         with sqlite3.connect(self.db_path) as conn:
-            # 修改查询以支持 JSON 模式
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # 优先选择 last_processed 为空的，然后按 last_processed 升序排列
+            # 查找没有关联视频或者关联视频都没有字幕的频道
             cursor.execute('''
-                SELECT channel_id, channel_name, channel_url, last_processed
-                FROM channels
-                ORDER BY last_processed ASC NULLS FIRST
-                LIMIT 1
-            ''')
+                SELECT c.channel_id, c.channel_name, c.channel_url
+                FROM channels c
+                LEFT JOIN videos v ON c.channel_id = v.channel_id
+                GROUP BY c.channel_id
+                HAVING SUM(CASE WHEN v.subtitle_extracted = 1 THEN 1 ELSE 0 END) = 0 OR COUNT(v.video_id) = 0
+                LIMIT ?
+            ''', (limit,))
             
-            row = cursor.fetchone()
-            if row:
-                return dict(row)
-            return None
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
 
     def get_random_video_for_subtitle_update(self) -> Optional[Dict]:
         """

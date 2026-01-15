@@ -178,7 +178,37 @@ class CookieKeepAliveService:
             True if successful, False otherwise
         """
         try:
-            # 尝试通过更新频道来进行保活
+            # 1. 第一优先级：为本地无数据的频道补充数据（既能保活也能补全数据）
+            try:
+                from youtube_channel_processor import get_processor
+                processor = get_processor()
+                # 获取所有本地无字幕数据的频道（新频道），限制一次性补全 10 个，避免单次保活任务过长
+                missing_channels = processor.get_channels_without_subtitles(limit=10)
+                
+                if missing_channels:
+                    logger.info(f"🔄 发现 {len(missing_channels)} 个无数据频道，正在通过保活进行初始化抓取")
+                    total_downloaded = 0
+                    
+                    for channel in missing_channels:
+                        channel_url = channel['channel_url']
+                        channel_name = channel['channel_name']
+                        logger.debug(f"  正在初始化频道数据: {channel_name}")
+                        
+                        result = await processor.process_channel_batch(
+                            channel_url=channel_url,
+                            max_videos=5, # 恢复为 5
+                            cookie_file=cookie_path
+                        )
+                        total_downloaded += result.get('downloaded_count', 0)
+                        await asyncio.sleep(2) # 稍微休息
+                    
+                    if total_downloaded > 0:
+                        logger.info(f"✅ 成功通过保活为新频道抓取了 {total_downloaded} 个视频字幕")
+                        return True
+            except Exception as ce:
+                logger.warning(f"通过补全频道数据进行保活失败: {str(ce)}")
+
+            # 2. 第二优先级：如果没有新频道，更新最陈旧的一个频道
             try:
                 from youtube_channel_processor import get_processor
                 processor = get_processor()
@@ -187,26 +217,44 @@ class CookieKeepAliveService:
                 if channel:
                     channel_url = channel['channel_url']
                     channel_name = channel['channel_name']
-                    logger.debug(f"🔄 使用频道进行保活: {channel_name} ({channel_url})")
+                    logger.debug(f"🔄 无新频道，更新最陈旧频道进行保活: {channel_name}")
                     
-                    # 使用频道更新作为保活手段
-                    # 限制每次保活只检查5个视频，避免耗时太长
                     result = await processor.process_channel_batch(
                         channel_url=channel_url,
                         max_videos=5,
                         cookie_file=cookie_path
                     )
+                    # 无论是否有新下载，只要请求成功了，就视为一次成功的保活
+                    logger.debug(f"✅ 频道刷新保活完成: {channel_name} (新下载: {result.get('downloaded_count', 0)})")
+                    return True
+            except Exception as oe:
+                logger.warning(f"通过更新陈旧频道保活失败: {str(oe)}")
+
+            # 3. 第三优先级：如果上述都失败，使用随机视频提取逻辑
+            try:
+                from youtube_channel_processor import get_processor
+                processor = get_processor()
+                video = processor.get_random_video_for_subtitle_update()
+                
+                if video:
+                    video_id = video['video_id']
+                    video_title = video['title'][:50]
+                    video_url = video['url']
+                    logger.debug(f"🔄 使用随机视频进行保活: {video_title} ({video_id})")
                     
-                    # 关键修改：只有真正发生下载才算完全保活成功
-                    if result.get('downloaded_count', 0) > 0:
-                        logger.debug(f"✅ 频道保活成功 (新下载: {result.get('downloaded_count')})")
+                    subtitles_data = processor.extract_video_subtitles(
+                        video_id=video_id,
+                        video_url=video_url,
+                        subtitle_lang='en',
+                        cookie_file=cookie_path
+                    )
+                    
+                    if subtitles_data:
+                        processor.save_subtitles(subtitles_data, video_id)
+                        logger.debug(f"✅ 随机视频保活成功: {video_title}")
                         return True
-                    else:
-                        logger.debug(f"频道保活完成但无新下载，尝试进一步随机视频保活以增强活跃度")
-                else:
-                    logger.debug("没有找到频道，尝试随机视频保活")
-            except Exception as ce:
-                logger.warning(f"通过频道保活失败，尝试随机视频保活: {str(ce)}")
+            except Exception as ve:
+                logger.warning(f"通过随机视频保活失败，尝试通用保活: {str(ve)}")
 
             # 如果没有频道或频道更新失败，尝试随机选择视频更新字幕进行保活
             try:
@@ -349,11 +397,13 @@ class CookieKeepAliveService:
                 
                 cookie_name, cookie_path = cookie_info
                 
-                # 智能避让：如果近期有任务，跳过
-                if self.should_skip_keepalive():
-                    # 即使跳过，也稍微等待一下再检查（比如等待 check_interval的一半），或者直接等下一个周期
-                    await asyncio.sleep(self.check_interval)
-                    continue
+                # 0. 关键修正：保活前先去 D1 同步最新的 Feed 列表
+                try:
+                    from execute_d1_task import resolve_feeds_from_d1
+                    # 同步所有活跃 Feed，确保 D1 新加的频道能被保活逻辑发现并初始化
+                    resolve_feeds_from_d1(sync_all_active=True)
+                except Exception as se:
+                    logger.warning(f"保活前同步 D1 Feed 列表失败: {se}")
 
                 # 执行保活操作
                 logger.debug(f"🔄 执行cookie保活: {cookie_name}")
