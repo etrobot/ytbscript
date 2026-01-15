@@ -39,41 +39,36 @@ class D1TaskManager:
             now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             logger.info(f"获取到 {len(tasks)} 个活跃任务 | 当前UTC: {now_utc}")
 
-            # 输出每个任务的调度信息，方便排查
+            # 输出每个任务的调度信息
             for task in tasks:
                 task_id = (task.get('id') or '')[:8]
-
-                # 先把整行原始数据 & 所有 key 打出来，方便和 D1 控制台对比
-                logger.info(f"  [RAW TASK {task_id}] {task}")
-                logger.info(f"  [RAW KEYS {task_id}] {list(task.keys())}")
-
-                sh_db = task.get('scheduled_hour')
-                sh_db_old = task.get('scheduledHour')
-                sm_db = task.get('scheduled_minute')
-                sm_db_old = task.get('scheduledMinute')
-
-                # 逻辑上用于调度的 hour/minute
-                sh = sh_db if sh_db is not None else sh_db_old
-                sm = sm_db if sm_db is not None else sm_db_old
+                
+                # 兼容 snake_case 和 camelCase
+                sh = task.get('scheduled_hour') or task.get('scheduledHour')
+                sm = task.get('scheduled_minute') if task.get('scheduled_minute') is not None else (task.get('scheduledMinute') if task.get('scheduledMinute') is not None else 0)
+                
+                # 获取 feed/url 统计
+                f_ids = task.get('feed_ids') or task.get('feedIds') or '[]'
+                f_urls = task.get('feed_urls') or task.get('feedUrls') or '[]'
+                
+                try:
+                    import json
+                    f_count = len(json.loads(f_ids)) if isinstance(f_ids, str) and f_ids.startswith('[') else 0
+                    u_count = len(json.loads(f_urls)) if isinstance(f_urls, str) and f_urls.startswith('[') else 0
+                except Exception:
+                    f_count = 0
+                    u_count = 0
 
                 last_exec = task.get('last_executed_at') or task.get('lastExecutedAt')
-
-                if sh is not None and sm is not None:
-                    scheduled_text = f"{int(sh):02d}:{int(sm):02d} UTC"
-                elif sh is not None:
-                    scheduled_text = f"{int(sh):02d}:-- UTC"
-                else:
-                    scheduled_text = "未设定"
-
+                
                 logger.info(
-                    "  - 任务 %s | 计划: %s | 上次执行: %s | raw(hour=%r, Hour=%r, minute=%r, Minute=%r)",
+                    "  - 任务 %s | 计划: %02d:%02d UTC | Feeds: %d, URLs: %d | 上次执行: %s",
                     task_id,
-                    scheduled_text,
-                    self._format_ts(last_exec),
-                    sh_db,
-                    sh_db_old,
-                    sm_db,
-                    sm_db_old,
+                    int(sh) if sh is not None else 0,
+                    int(sm),
+                    f_count,
+                    u_count,
+                    self._format_ts(last_exec)
                 )
             return tasks
         except Exception as e:
@@ -139,7 +134,7 @@ class D1TaskManager:
             raise
 
     def create_task(self, user_id: str, task_type: str, scheduled_hour: int,
-                   feed_ids: str, prompt: str = None, scheduled_minute: int = 0) -> str:
+                   feed_ids: str, prompt: str = None, scheduled_minute: int = 0, feed_urls: str = None) -> str:
         """创建新任务"""
         import uuid
         import time
@@ -152,18 +147,18 @@ class D1TaskManager:
             try:
                 self.d1.execute("""
                     INSERT INTO scheduled_tasks
-                    (id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, now, now])
+                    (id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, feed_urls, prompt, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, feed_urls, prompt, now, now])
             except Exception:
                 # 回退到 camelCase (旧版数据库)
                 self.d1.execute("""
                     INSERT INTO scheduled_tasks
-                    (id, userId, taskType, scheduledHour, scheduledMinute, feedIds, prompt, isActive, createdAt, updatedAt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, prompt, now, now])
+                    (id, userId, taskType, scheduledHour, scheduledMinute, feedIds, feedUrls, prompt, isActive, createdAt, updatedAt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """, [task_id, user_id, task_type, scheduled_hour, scheduled_minute, feed_ids, feed_urls, prompt, now, now])
 
-            logger.info(f"创建任务成功: {task_id}")
+            logger.info(f"创建任务成功: {task_id} | 类型: {task_type} | Feeds: {feed_ids[:30]}... | URLs: {feed_urls[:30] if feed_urls else 'None'}...")
             return task_id
         except Exception as e:
             logger.error(f"创建任务失败: {e}")

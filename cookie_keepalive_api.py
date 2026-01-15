@@ -33,9 +33,15 @@ async def verify_any_token(
 
 
 def _get_cookie_dir() -> Path:
-    base_dir = Path(__file__).parent.absolute()
-    cookie_dir = base_dir / "cookies"
-    cookie_dir.mkdir(exist_ok=True)
+    # 优先从环境变量获取 COOKIES_DIR
+    env_cookies_dir = os.getenv("COOKIES_DIR")
+    if env_cookies_dir:
+        cookie_dir = Path(env_cookies_dir).absolute()
+    else:
+        base_dir = Path(__file__).parent.absolute()
+        cookie_dir = base_dir / "cookies"
+    
+    cookie_dir.mkdir(parents=True, exist_ok=True)
     return cookie_dir
 
 
@@ -57,8 +63,22 @@ async def control_keepalive(action: str, token_valid: bool = Depends(verify_any_
         if action == "start":
             if keepalive.running:
                 return {"status": "info", "message": "保活服务已在运行"}
+            
+            # 启动前强制验证一次 Cookie 有效性
+            # 获取当前 Cookie 路径
+            cookie_info = keepalive.get_active_cookie()
+            if not cookie_info:
+                 raise HTTPException(status_code=400, detail="启动失败: 未找到 Cookie 文件，请先上传")
+                 
+            _, cookie_path = cookie_info
+            
+            # 验证 Cookie
+            is_valid = await keepalive.validate_cookie(cookie_path)
+            if not is_valid:
+                 raise HTTPException(status_code=400, detail="启动失败: Cookie 验证无效 (无法访问YouTube)，请重新上传新的 Cookie")
+
             keepalive.start()
-            return {"status": "success", "message": "保活服务已启动"}
+            return {"status": "success", "message": "Cookie 验证通过，保活服务已启动"}
 
         if action == "pause":
             keepalive.pause()

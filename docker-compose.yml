@@ -4,7 +4,7 @@ services:
     container_name: ytbscript
     restart: unless-stopped
     volumes:
-      - ytbscript_data:/app/data
+      - ./data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
       - DB_PATH=/app/data/youtube_channels.db
@@ -40,9 +40,9 @@ services:
     env_file:
       - .env
 
-volumes:
-  ytbscript_data:
-    driver: local
+# volumes:
+#   ytbscript_data:
+#     driver: local
 
 networks:
   traefik:

@@ -43,8 +43,7 @@ class YouTubeChannelProcessor:
             # 创建频道表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS channels (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    channel_id TEXT UNIQUE NOT NULL,
+                    channel_id TEXT PRIMARY KEY,
                     channel_name TEXT NOT NULL,
                     channel_url TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -55,8 +54,7 @@ class YouTubeChannelProcessor:
             # 创建视频表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS videos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    video_id TEXT UNIQUE NOT NULL,
+                    video_id TEXT PRIMARY KEY,
                     channel_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     url TEXT NOT NULL,
@@ -75,8 +73,7 @@ class YouTubeChannelProcessor:
             # 创建 RSS Feed 表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rss_feeds (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    url TEXT UNIQUE NOT NULL,
+                    url TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     last_fetched TIMESTAMP
                 )
@@ -85,10 +82,9 @@ class YouTubeChannelProcessor:
             # 创建 RSS 文章表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rss_articles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT PRIMARY KEY,
                     feed_url TEXT NOT NULL,
                     title TEXT NOT NULL,
-                    url TEXT UNIQUE NOT NULL,
                     summary TEXT,
                     content TEXT,
                     published_at TIMESTAMP,
@@ -133,11 +129,11 @@ class YouTubeChannelProcessor:
             'quiet': True,
             'no_warnings': True,
             'playlistend': max_videos,
-            'extractor_args': {
-                'youtubetab': {
-                    'skip': ['authcheck']
-                }
-            },
+            'ignoreerrors': True,  # 遇到单个视频错误不中断
+            'sleep_interval': 2,   # 请求间隔，防止429
+            'max_sleep_interval': 5,
+            # 模拟现代浏览器 UA，配合 Cookie 使用效果更好
+            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
         # 处理Cookie
@@ -150,14 +146,13 @@ class YouTubeChannelProcessor:
             temp_cookie_file = save_cookie_string_as_netscape(cookie_string)
             ydl_opts['cookiefile'] = str(temp_cookie_file)
             logger.info("使用传入的Cookie字符串（已转换为Netscape格式）")
-        else:
             # 使用默认的cookie文件
-            default_cookie = COOKIE_DIR / "cookies.txt"
+            default_cookie = (COOKIE_DIR / "cookies.txt").absolute()
             if default_cookie.exists():
                 ydl_opts['cookiefile'] = str(default_cookie)
-                logger.info("使用默认Cookie文件: cookies.txt")
+                logger.info(f"使用默认Cookie文件: {default_cookie}")
             else:
-                logger.warning("未找到默认 cookies.txt，可能会遇到访问限制")
+                logger.warning(f"未找到默认 cookies.txt (预期路径: {default_cookie})，可能会遇到访问限制")
         
         def _flatten_entries(entries):
             """展开嵌套的 playlist，确保获取真实视频条目"""
@@ -312,6 +307,8 @@ class YouTubeChannelProcessor:
             'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
+            # 保持 UA 一致，防止风控
+            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
         # 处理Cookie
@@ -424,8 +421,11 @@ class YouTubeChannelProcessor:
             self.save_channel_and_videos(channel_info, videos)
             
             # 3. 串行处理每个视频的字幕提取
+            # 3. 串行处理每个视频的字幕提取
             success_count = 0
             failed_count = 0
+            skipped_count = 0
+            downloaded_count = 0
             
             logger.info(f"开始串行处理 {len(videos)} 个视频的字幕...")
             
@@ -442,6 +442,7 @@ class YouTubeChannelProcessor:
                     if result and result[0]:
                         logger.info(f"视频 {video['video_id']} 字幕已存在，跳过")
                         success_count += 1
+                        skipped_count += 1
                         continue
                 
                 # 提取字幕
@@ -456,6 +457,7 @@ class YouTubeChannelProcessor:
                 if subtitles_data:
                     self.save_subtitles(subtitles_data, video['video_id'])
                     success_count += 1
+                    downloaded_count += 1
                 else:
                     failed_count += 1
                 
@@ -471,11 +473,13 @@ class YouTubeChannelProcessor:
                 'total_videos': len(videos),
                 'success_count': success_count,
                 'failed_count': failed_count,
+                'skipped_count': skipped_count,
+                'downloaded_count': downloaded_count,
                 'duration_seconds': duration,
                 'processed_at': end_time.isoformat()
             }
             
-            logger.info(f"批量处理完成: 成功 {success_count}, 失败 {failed_count}, 耗时 {duration:.1f}秒")
+            logger.info(f"批量处理完成: 成功 {success_count} (下载: {downloaded_count}, 跳过: {skipped_count}), 失败 {failed_count}, 耗时 {duration:.1f}秒")
             return result
             
         except Exception as e:
@@ -507,7 +511,7 @@ class YouTubeChannelProcessor:
                         c.channel_name,
                         c.channel_url,
                         c.last_processed,
-                        COUNT(v.id) as total_videos,
+                        COUNT(v.video_id) as total_videos,
                         SUM(CASE WHEN v.subtitle_extracted THEN 1 ELSE 0 END) as videos_with_subtitles
                     FROM channels c
                     LEFT JOIN videos v ON c.channel_id = v.channel_id
@@ -531,7 +535,7 @@ class YouTubeChannelProcessor:
                 cursor.execute('''
                     SELECT 
                         COUNT(DISTINCT c.channel_id) as total_channels,
-                        COUNT(v.id) as total_videos,
+                        COUNT(v.video_id) as total_videos,
                         SUM(CASE WHEN v.subtitle_extracted THEN 1 ELSE 0 END) as videos_with_subtitles
                     FROM channels c
                     LEFT JOIN videos v ON c.channel_id = v.channel_id
@@ -546,27 +550,82 @@ class YouTubeChannelProcessor:
 
     def get_oldest_channel(self) -> Optional[Dict]:
         """
-        获取更新时间最早（最后一次处理时间最久）的一个频道
+        获取更新时间最早的一个频道（优先返回无数据的）
+        """
+        channels = self.get_channels_without_subtitles(limit=1)
+        if not channels:
+            # 如果都有数据了，则按最后处理时间排序
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute('SELECT channel_id, channel_name, channel_url FROM channels ORDER BY last_processed ASC NULLS FIRST LIMIT 1')
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        return channels[0]
+
+    def get_channels_without_subtitles(self, limit: int = 10) -> List[Dict]:
+        """
+        获取本地没有任何字幕数据的频道列表（即新添加但从未成功抓取的频道）
         
+        Args:
+            limit: 返回数量限制
+            
         Returns:
-            频道信息字典，如果不存在则返回None
+            频道信息字典列表
         """
         with sqlite3.connect(self.db_path) as conn:
-            # 修改查询以支持 JSON 模式
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # 优先选择 last_processed 为空的，然后按 last_processed 升序排列
+            # 查找没有关联视频或者关联视频都没有字幕的频道
             cursor.execute('''
-                SELECT channel_id, channel_name, channel_url, last_processed
-                FROM channels
-                ORDER BY last_processed ASC NULLS FIRST
+                SELECT c.channel_id, c.channel_name, c.channel_url
+                FROM channels c
+                LEFT JOIN videos v ON c.channel_id = v.channel_id
+                GROUP BY c.channel_id
+                HAVING SUM(CASE WHEN v.subtitle_extracted = 1 THEN 1 ELSE 0 END) = 0 OR COUNT(v.video_id) = 0
+                LIMIT ?
+            ''', (limit,))
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    def get_random_video_for_subtitle_update(self) -> Optional[Dict]:
+        """
+        获取一个随机视频用于字幕更新（优先选择没有字幕的视频）
+        
+        Returns:
+            视频信息字典，如果不存在则返回None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # 优先选择没有字幕的视频，如果都有字幕则随机选择一个
+            cursor.execute('''
+                SELECT video_id, title, url, channel_id, subtitle_extracted
+                FROM videos
+                WHERE subtitle_extracted = 0 OR subtitle_extracted IS NULL
+                ORDER BY RANDOM()
                 LIMIT 1
             ''')
             
             row = cursor.fetchone()
             if row:
                 return dict(row)
+            
+            # 如果所有视频都有字幕，则随机选择一个视频重新更新字幕
+            cursor.execute('''
+                SELECT video_id, title, url, channel_id, subtitle_extracted
+                FROM videos
+                ORDER BY RANDOM()
+                LIMIT 1
+            ''')
+            
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            
             return None
 
 

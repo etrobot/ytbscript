@@ -308,9 +308,9 @@ class AIGenerator:
                     })
             
             cited_feeds = list(cited_feed_map.values())
-            
+
             logger.info(f"成功生成：标题='{generated_title[:50]}...', 内容长度={len(final_content)}, 幻灯片数={len(slides)}, 引用feeds={len(cited_feeds)}, 引用articles={len(cited_articles_list)}")
-            
+
             return {
                 "title": generated_title,
                 "content": final_content,
@@ -445,7 +445,36 @@ class AIGenerator:
                                 "cite": {
                                     "type": "array",
                                     "items": {"type": "string"}
-                                }
+                                },
+                                # Cover slide metadata (optional)
+                                "feedThumbnails": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["name"],
+                                        "properties": {
+                                            "name": {"type": "string"},
+                                            "icon": {"type": ["string", "null"]},
+                                            "url": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "citedArticles": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["articleId", "articleTitle", "feedName"],
+                                        "properties": {
+                                            "articleId": {"type": "string"},
+                                            "articleTitle": {"type": "string"},
+                                            "feedName": {"type": "string"},
+                                            "feedIcon": {"type": ["string", "null"]},
+                                            "imageUrl": {"type": ["string", "null"]},
+                                            "url": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "visual_html": {"type": "string"}
                             }
                         }
                     }

@@ -11,13 +11,20 @@ import asyncio
 import logging
 import time
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
+import sqlite3
 from typing import Optional, Dict
 import yt_dlp
 from threading import Lock
 
 logger = logging.getLogger(__name__)
+
+# 获取数据库路径 (假设和 channel processor 用的是同一个库)
+# 注意：这里我们可能需要引用全局配置或假设默认位置
+BASE_DIR = Path(__file__).parent.absolute()
+DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "youtube_channels.db")))
 
 
 class CookieKeepAliveService:
@@ -31,8 +38,14 @@ class CookieKeepAliveService:
             cookie_dir: Cookie目录路径
             check_interval: 保活检查间隔（秒），默认5分钟
         """
-        self.cookie_dir = cookie_dir
+        self.cookie_dir = cookie_dir.absolute()
         self.check_interval = check_interval
+        
+        # 确保cookie目录存在
+        self.cookie_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"🍪 Cookie保活服务初始化，使用目录: {self.cookie_dir}")
+        
         self.metadata_file = cookie_dir / "cookie_metadata.json"
         self.running = False
         self.paused = False
@@ -98,20 +111,12 @@ class CookieKeepAliveService:
         Returns:
             (cookie_name, cookie_path) 或 None
         """
-        # 优先使用 cookies.txt
         default_cookie = self.cookie_dir / "cookies.txt"
         if default_cookie.exists():
             cookie_name = "cookies.txt"
             if cookie_name not in self.metadata:
                 self.register_cookie(cookie_name, default_cookie)
             return (cookie_name, default_cookie)
-        
-        # 否则使用第一个找到的cookie文件
-        for cookie_file in self.cookie_dir.glob("*.txt"):
-            cookie_name = cookie_file.name
-            if cookie_name not in self.metadata:
-                self.register_cookie(cookie_name, cookie_file)
-            return (cookie_name, cookie_file)
         
         return None
     
@@ -133,6 +138,8 @@ class CookieKeepAliveService:
                 'extract_flat': True,
                 'cookiefile': str(cookie_path),
                 'socket_timeout': 30,
+                # 保持 UA 一致，防止风控
+                'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             }
             
             test_url = "https://www.youtube.com/"
@@ -171,7 +178,37 @@ class CookieKeepAliveService:
             True if successful, False otherwise
         """
         try:
-            # 尝试通过更新频道来进行保活
+            # 1. 第一优先级：为本地无数据的频道补充数据（既能保活也能补全数据）
+            try:
+                from youtube_channel_processor import get_processor
+                processor = get_processor()
+                # 获取所有本地无字幕数据的频道（新频道），限制一次性补全 10 个，避免单次保活任务过长
+                missing_channels = processor.get_channels_without_subtitles(limit=10)
+                
+                if missing_channels:
+                    logger.info(f"🔄 发现 {len(missing_channels)} 个无数据频道，正在通过保活进行初始化抓取")
+                    total_downloaded = 0
+                    
+                    for channel in missing_channels:
+                        channel_url = channel['channel_url']
+                        channel_name = channel['channel_name']
+                        logger.debug(f"  正在初始化频道数据: {channel_name}")
+                        
+                        result = await processor.process_channel_batch(
+                            channel_url=channel_url,
+                            max_videos=5, # 恢复为 5
+                            cookie_file=cookie_path
+                        )
+                        total_downloaded += result.get('downloaded_count', 0)
+                        await asyncio.sleep(2) # 稍微休息
+                    
+                    if total_downloaded > 0:
+                        logger.info(f"✅ 成功通过保活为新频道抓取了 {total_downloaded} 个视频字幕")
+                        return True
+            except Exception as ce:
+                logger.warning(f"通过补全频道数据进行保活失败: {str(ce)}")
+
+            # 2. 第二优先级：如果没有新频道，更新最陈旧的一个频道
             try:
                 from youtube_channel_processor import get_processor
                 processor = get_processor()
@@ -180,21 +217,77 @@ class CookieKeepAliveService:
                 if channel:
                     channel_url = channel['channel_url']
                     channel_name = channel['channel_name']
-                    logger.debug(f"🔄 使用频道进行保活: {channel_name} ({channel_url})")
+                    logger.debug(f"🔄 无新频道，更新最陈旧频道进行保活: {channel_name}")
                     
-                    # 使用频道更新作为保活手段
-                    # 限制每次保活只检查5个视频，避免耗时太长
-                    await processor.process_channel_batch(
+                    result = await processor.process_channel_batch(
                         channel_url=channel_url,
                         max_videos=5,
                         cookie_file=cookie_path
                     )
-                    logger.debug(f"✅ 频道保活成功: {channel_name}")
+                    # 无论是否有新下载，只要请求成功了，就视为一次成功的保活
+                    logger.debug(f"✅ 频道刷新保活完成: {channel_name} (新下载: {result.get('downloaded_count', 0)})")
                     return True
-            except Exception as ce:
-                logger.warning(f"通过频道保活失败，尝试通用保活: {str(ce)}")
+            except Exception as oe:
+                logger.warning(f"通过更新陈旧频道保活失败: {str(oe)}")
 
-            # 如果没有频道或频道更新失败，执行通用保活
+            # 3. 第三优先级：如果上述都失败，使用随机视频提取逻辑
+            try:
+                from youtube_channel_processor import get_processor
+                processor = get_processor()
+                video = processor.get_random_video_for_subtitle_update()
+                
+                if video:
+                    video_id = video['video_id']
+                    video_title = video['title'][:50]
+                    video_url = video['url']
+                    logger.debug(f"🔄 使用随机视频进行保活: {video_title} ({video_id})")
+                    
+                    subtitles_data = processor.extract_video_subtitles(
+                        video_id=video_id,
+                        video_url=video_url,
+                        subtitle_lang='en',
+                        cookie_file=cookie_path
+                    )
+                    
+                    if subtitles_data:
+                        processor.save_subtitles(subtitles_data, video_id)
+                        logger.debug(f"✅ 随机视频保活成功: {video_title}")
+                        return True
+            except Exception as ve:
+                logger.warning(f"通过随机视频保活失败，尝试通用保活: {str(ve)}")
+
+            # 如果没有频道或频道更新失败，尝试随机选择视频更新字幕进行保活
+            try:
+                from youtube_channel_processor import get_processor
+                processor = get_processor()
+                video = processor.get_random_video_for_subtitle_update()
+                
+                if video:
+                    video_id = video['video_id']
+                    video_title = video['title'][:50]  # 限制标题长度
+                    video_url = video['url']
+                    logger.debug(f"🔄 使用随机视频进行保活: {video_title} ({video_id})")
+                    
+                    # 提取视频字幕作为保活手段
+                    subtitles_data = processor.extract_video_subtitles(
+                        video_id=video_id,
+                        video_url=video_url,
+                        subtitle_lang='en',  # 为了保活成功率，使用最常见的英文
+                        cookie_file=cookie_path
+                    )
+                    
+                    if subtitles_data:
+                        processor.save_subtitles(subtitles_data, video_id)
+                        logger.debug(f"✅ 随机视频保活成功: {video_title}")
+                        return True
+                    else:
+                        logger.debug(f"随机视频无字幕，尝试通用保活")
+                else:
+                    logger.debug("没有找到视频，尝试通用保活")
+            except Exception as ve:
+                logger.warning(f"通过随机视频保活失败，尝试通用保活: {str(ve)}")
+
+            # 如果频道和视频更新都失败，执行通用保活
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
@@ -202,6 +295,8 @@ class CookieKeepAliveService:
                 'cookiefile': str(cookie_path),
                 'socket_timeout': 30,
                 'playlist_items': '1',
+                # 保持 UA 一致，防止风控
+                'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             }
             
             url = self.keepalive_urls[int(time.time()) % len(self.keepalive_urls)]
@@ -227,6 +322,42 @@ class CookieKeepAliveService:
             logger.error(f"保活操作最终失败: {str(e)}")
             return False
     
+    def should_skip_keepalive(self) -> bool:
+        """
+        检查未来 10 分钟内是否有计划任务，如果有则跳过保活，避免 429
+        """
+        try:
+            current_time = datetime.now()
+            # 检查接下来 20 分钟
+            check_times = [current_time + timedelta(minutes=i) for i in range(21)]
+            
+            # 将这些时间点转换为 (hour, minute) 对
+            target_slots = set((t.hour, t.minute) for t in check_times)
+            
+            if not DB_PATH.exists():
+                return False
+
+            with sqlite3.connect(str(DB_PATH)) as conn:
+                cursor = conn.cursor()
+                # 检查 d1_tasks 表是否存在
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='d1_tasks'")
+                if not cursor.fetchone():
+                    return False
+                
+                # 查询所有活跃任务的计划时间
+                cursor.execute("SELECT scheduled_hour, scheduled_minute FROM d1_tasks WHERE is_active = 1")
+                tasks = cursor.fetchall()
+                
+                for hour, minute in tasks:
+                    if (hour, minute) in target_slots:
+                        logger.info(f"⏭️  检测到活跃任务即将在 {hour:02d}:{minute:02d} 执行，跳过本次保活以节省配额")
+                        return True
+                        
+            return False
+        except Exception as e:
+            logger.warning(f"检查即将到来的任务失败: {e}，将继续执行保活")
+            return False
+
     def pause(self):
         """暂停保活（有任务运行时调用）"""
         with self.lock:
@@ -266,6 +397,14 @@ class CookieKeepAliveService:
                 
                 cookie_name, cookie_path = cookie_info
                 
+                # 0. 关键修正：保活前先去 D1 同步最新的 Feed 列表
+                try:
+                    from execute_d1_task import resolve_feeds_from_d1
+                    # 同步所有活跃 Feed，确保 D1 新加的频道能被保活逻辑发现并初始化
+                    resolve_feeds_from_d1(sync_all_active=True)
+                except Exception as se:
+                    logger.warning(f"保活前同步 D1 Feed 列表失败: {se}")
+
                 # 执行保活操作
                 logger.debug(f"🔄 执行cookie保活: {cookie_name}")
                 success = await self.perform_keepalive(cookie_path)
@@ -372,7 +511,14 @@ def get_keepalive_service(cookie_dir: Path = None, check_interval: int = 300) ->
     
     if _keepalive_service is None:
         if cookie_dir is None:
-            raise ValueError("首次调用需要提供cookie_dir参数")
+            # 自动探测路径逻辑，与项目其他模块保持一致
+            env_cookies_dir = os.getenv("COOKIES_DIR")
+            if env_cookies_dir:
+                cookie_dir = Path(env_cookies_dir)
+            else:
+                # 默认回退到当前文件所在目录下的 cookies 文件夹
+                cookie_dir = Path(__file__).parent.absolute() / "cookies"
+                
         _keepalive_service = CookieKeepAliveService(cookie_dir, check_interval)
     
     return _keepalive_service
