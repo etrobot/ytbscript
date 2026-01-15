@@ -83,12 +83,16 @@ class DataFetcher:
                         
                         # 创建类似文章的结构
                         articles.append({
+                            'id': video_id,  # 使用 video_id 作为唯一标识
                             'title': title,
                             'summary': '',
                             'content': '',
                             'videoTranscript': transcript_text,
                             'url': url or f"https://www.youtube.com/watch?v={video_id}",
+                            'feedId': cid.strip(),  # 使用 channel_id 作为 feedId
                             'feedName': channel_name or 'YouTube Channel',
+                            'feedIcon': f"https://www.youtube.com/channel/{cid.strip()}",  # YouTube 频道链接
+                            'imageUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",  # 视频缩略图
                             'publishedAt': upload_date,
                             'videoViews': view_count
                         })
@@ -123,7 +127,7 @@ class DataFetcher:
             placeholders = ','.join('?' * len(video_ids))
             cursor.execute(f"""
                 SELECT v.video_id, v.title, v.subtitle_json, v.upload_date, 
-                       c.channel_name, v.url, v.view_count
+                       c.channel_name, c.channel_id, v.url, v.view_count
                 FROM videos v 
                 JOIN channels c ON v.channel_id = c.channel_id 
                 WHERE v.video_id IN ({placeholders})
@@ -132,7 +136,7 @@ class DataFetcher:
             """, video_ids)
             
             rows = cursor.fetchall()
-            for video_id, title, subtitle_json_str, upload_date, channel_name, url, view_count in rows:
+            for video_id, title, subtitle_json_str, upload_date, channel_name, channel_id, url, view_count in rows:
                 if not subtitle_json_str:
                     continue
                 
@@ -141,12 +145,16 @@ class DataFetcher:
                     transcript_text = " ".join([s.get('subtitle', '') for s in subtitles])
                     
                     articles.append({
+                        'id': video_id,  # 使用 video_id 作为唯一标识
                         'title': title,
                         'summary': '',
                         'content': '',
                         'videoTranscript': transcript_text,
                         'url': url or f"https://www.youtube.com/watch?v={video_id}",
+                        'feedId': channel_id,  # 使用 channel_id 作为 feedId
                         'feedName': channel_name or 'YouTube Channel',
+                        'feedIcon': f"https://www.youtube.com/channel/{channel_id}" if channel_id else None,
+                        'imageUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
                         'publishedAt': upload_date,
                         'videoViews': view_count
                     })
@@ -245,7 +253,7 @@ class DataFetcher:
                     
                     # 获取文章
                     cursor.execute("""
-                        SELECT title, summary, content, url, published_at 
+                        SELECT id, title, summary, content, url, published_at 
                         FROM rss_articles 
                         WHERE feed_url = ? AND published_at >= ?
                         ORDER BY published_at DESC 
@@ -255,12 +263,16 @@ class DataFetcher:
                     rows = cursor.fetchall()
                     for row in rows:
                         articles.append({
+                            'id': str(row['id']),  # 使用数据库 id 作为唯一标识
                             'title': row['title'],
                             'summary': row['summary'],
                             'content': row['content'],
                             'videoTranscript': row['content'] or row['summary'],
                             'url': row['url'],
+                            'feedId': url,  # 使用 feed URL 作为 feedId
                             'feedName': feed_name,
+                            'feedIcon': None,  # RSS 没有图标
+                            'imageUrl': None,  # RSS 文章没有默认图片
                             'publishedAt': row['published_at'],
                             'videoViews': None
                         })
